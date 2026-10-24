@@ -66,6 +66,24 @@ Or run `docker compose exec vibeify python -m app.cli make-admin <email-or-spoti
 
 Run it behind a reverse proxy with HTTPS (Caddy, Traefik, nginx, or a hosting platform's router). When `PUBLIC_URL` starts with `https://`, session cookies are marked `Secure`. Database migrations run when the container starts.
 
+## Deploying to Render
+
+`render.yaml` is a Render Blueprint: a Docker web service and a managed PostgreSQL database, both in Singapore.
+
+1. In Render, choose **New → Blueprint** and pick this repository. Render asks once for:
+   - `SECRET_KEY`: when moving an existing install, use the **same** value it already has.
+   - `BOOTSTRAP_ADMINS`
+2. Render builds the image, runs the migrations and starts the app. Every push to `main` deploys again.
+3. To move data from a Docker Compose install, copy the database's **External** connection string from Render, then run:
+   ```bash
+   TARGET_DATABASE_URL='postgresql://…' scripts/migrate-to-render.sh
+   ```
+   The script stops the local app container, dumps the local database, restores it into Render, and compares row counts. Then restart the Render service.
+4. Add your domain under the service's **Settings → Custom Domains**, and create the DNS records Render shows.
+5. Update the redirect and webhook URLs to the new `PUBLIC_URL`: the Spotify app, the Google OAuth client and the Stripe webhook.
+
+The app accepts the plain `postgresql://` URLs that Render and other hosts provide, and listens on `$PORT` when the host sets it.
+
 ### First-time setup in the admin panel
 
 1. **AI models.** Add a provider and its API key.

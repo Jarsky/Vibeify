@@ -6,7 +6,7 @@ SMTP, quotas) is stored in the database and edited in the admin panel.
 """
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -34,6 +34,15 @@ class Config(BaseSettings):
     # when PUBLIC_URL is https regardless).
     trust_proxy_headers: bool = Field(True, alias="TRUST_PROXY_HEADERS")
     static_dir: str = Field("static", alias="STATIC_DIR")
+
+    @field_validator("database_url")
+    @classmethod
+    def _async_driver(cls, url: str) -> str:
+        """Accept the plain postgres:// URLs hosts hand out (Render, Neon, Heroku); the app needs the asyncpg driver."""
+        for prefix in ("postgres://", "postgresql://"):
+            if url.startswith(prefix):
+                url = "postgresql+asyncpg://" + url[len(prefix):]
+        return url.replace("sslmode=", "ssl=") if url.startswith("postgresql+asyncpg://") else url
 
     @property
     def secure_cookies(self) -> bool:

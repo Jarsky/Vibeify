@@ -50,6 +50,8 @@ def password_problem(password: str) -> str | None:
 # ── sessions ─────────────────────────────────────────────────────────────────
 def client_ip(request: Request) -> str:
     if get_config().trust_proxy_headers:
+        if cf := request.headers.get("cf-connecting-ip"):   # Cloudflare's view of the visitor; X-Forwarded-For can be prefilled
+            return cf.strip()
         fwd = request.headers.get("x-forwarded-for")
         if fwd:
             return fwd.split(",")[0].strip()

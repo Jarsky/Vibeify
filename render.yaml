@@ -1,0 +1,34 @@
+# Render Blueprint: one Docker web service + managed PostgreSQL, both in Singapore (closest region to NZ).
+# Render → New → Blueprint → pick this repo. You're asked for the `sync: false` values once.
+# Regions and Postgres versions can't be changed after creation.
+services:
+  - type: web
+    name: vibeify
+    runtime: docker
+    region: singapore
+    plan: 0.5c-512mb
+    branch: main
+    autoDeployTrigger: commit
+    healthCheckPath: /api/health
+    envVars:
+      - key: PUBLIC_URL
+        value: https://vibeify.nz
+      - key: DATABASE_URL
+        fromDatabase:
+          name: vibeify-db
+          property: connectionString
+      # Must be the SECRET_KEY of the database you migrate from, or stored keys and tokens can't be decrypted.
+      - key: SECRET_KEY
+        sync: false
+      - key: BOOTSTRAP_ADMINS
+        sync: false
+      - key: TRUST_PROXY_HEADERS
+        value: "true"
+
+databases:
+  - name: vibeify-db
+    region: singapore
+    plan: 0.1c-256mb
+    postgresMajorVersion: "17"
+    databaseName: vibeify
+    user: vibeify

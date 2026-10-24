@@ -165,3 +165,11 @@ def test_themes_rotate_daily():
     from app.routers.discover import THEMES_PER_DAY, todays_themes
     a, b = todays_themes(date(2026, 10, 25)), todays_themes(date(2026, 10, 26))
     assert len(a) == len(set(a)) == THEMES_PER_DAY and a != b
+
+
+async def test_client_ip_prefers_cloudflare(client, outbox):
+    await enable_email()
+    await client.post("/api/auth/email/login", json={"email": "nobody@example.com", "password": "wrong password!"},
+                      headers={"cf-connecting-ip": "203.0.113.9", "x-forwarded-for": "6.6.6.6, 203.0.113.9"})
+    async with app_db.sessionmaker()() as db:
+        assert (await db.execute(select(AuditLog.ip).where(AuditLog.action == "auth.login_failed"))).scalar_one() == "203.0.113.9"
