@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#09090f" />
+    <meta name="description" content="Describe the vibe and get a Spotify playlist, built by AI and refined in chat." />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>Vibeify</title>
+    <script>
+      // A page restored from an old cache (e.g. with Back after a deploy) asks for script files that no longer exist.
+      // Reload once to get the current page instead of showing a blank screen.
+      addEventListener("error", function (e) {
+        var src = e.target && (e.target.src || e.target.href);
+        if (!src || src.indexOf("/assets/") < 0) return;
+        try { if (Date.now() - Number(sessionStorage.getItem("asset-reload") || 0) < 10000) return; sessionStorage.setItem("asset-reload", String(Date.now())); } catch (_) {}
+        location.reload();
+      }, true);
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
