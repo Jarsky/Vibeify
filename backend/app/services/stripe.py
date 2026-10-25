@@ -12,9 +12,15 @@ API = "https://api.stripe.com/v1"
 
 
 class StripeError(Exception):
-    def __init__(self, message: str, status: int = 0):
+    def __init__(self, message: str, status: int = 0, code: str = ""):
         super().__init__(message)
         self.status = status
+        self.code = code   # Stripe's error code, e.g. "resource_missing"
+
+    @property
+    def missing(self) -> bool:
+        """The object doesn't exist in this Stripe account, e.g. an id saved under other keys (test vs live)."""
+        return self.code == "resource_missing" or self.status == 404
 
 
 def _form(data: dict, prefix: str = "") -> list[tuple[str, str]]:
@@ -51,7 +57,8 @@ class Stripe:
                                      headers={"Content-Type": "application/x-www-form-urlencoded"} if data else None)
         body = r.json() if r.content else {}
         if r.status_code >= 400:
-            raise StripeError((body.get("error") or {}).get("message") or f"Stripe error {r.status_code}", r.status_code)
+            err = body.get("error") or {}
+            raise StripeError(err.get("message") or f"Stripe error {r.status_code}", r.status_code, err.get("code") or "")
         return body
 
     # -- catalogue ---------------------------------------------------------------

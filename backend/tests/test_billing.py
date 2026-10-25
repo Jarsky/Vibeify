@@ -3,6 +3,7 @@ import time
 
 import httpx
 import respx
+from sqlalchemy import select
 
 from app import db as app_db
 from app import settings_store
@@ -141,3 +142,38 @@ async def test_checkout_webhook_and_cancel(client, outbox):
 async def test_missing_asset_is_404_not_html(client):
     r = await client.get("/assets/index-OLDHASH.js")
     assert r.status_code == 404 and r.headers["cache-control"] == "no-store"
+
+
+@respx.mock
+async def test_ids_from_other_stripe_keys_are_replaced(client, outbox):
+    """Switching test → live keys (or accounts): saved product, price and customer ids don't exist there."""
+    await sign_up(client, outbox, "admin@example.com")
+    await configure_stripe()
+    async with app_db.sessionmaker()() as db:
+        db.add(Plan(name="Pro", price_cents=500, currency="nzd", interval="month", active=True,
+                    stripe_product_id="prod_old", stripe_price_id="price_old"))
+        me = (await db.execute(select(User))).scalars().first()
+        me.stripe_customer_id = "cus_old"
+        await db.commit()
+    missing = lambda kind: httpx.Response(404, json={"error": {"code": "resource_missing", "message": f"No such {kind}"}})  # noqa: E731
+    respx.post("https://api.stripe.com/v1/products/prod_old").mock(return_value=missing("product: 'prod_old'"))
+    respx.post("https://api.stripe.com/v1/products").mock(return_value=httpx.Response(200, json={"id": "prod_new"}))
+    prices = respx.post("https://api.stripe.com/v1/prices").mock(return_value=httpx.Response(200, json={"id": "price_new"}))
+    r = (await client.post("/api/admin/plans/resync")).json()
+    assert r == {"ok": True, "warnings": []}
+    assert dict(_form_pairs(prices.calls[0].request))["product"] == "prod_new"
+    plan = (await client.get("/api/admin/plans")).json()[0]
+    assert plan["stripe_price_id"] == "price_new"
+
+    respx.post("https://api.stripe.com/v1/customers").mock(return_value=httpx.Response(200, json={"id": "cus_new"}))
+    sessions = respx.post("https://api.stripe.com/v1/checkout/sessions").mock(side_effect=[
+        httpx.Response(400, json={"error": {"code": "resource_missing", "message": "No such customer: 'cus_old'"}}),
+        httpx.Response(200, json={"url": "https://checkout.stripe.com/x"})])
+    r = await client.post("/api/billing/checkout", json={"plan_id": plan["id"]})
+    assert r.status_code == 200 and r.json()["url"].startswith("https://checkout")
+    assert dict(_form_pairs(sessions.calls[1].request))["customer"] == "cus_new"
+
+
+def _form_pairs(request):
+    from urllib.parse import parse_qsl
+    return parse_qsl(request.content.decode())

@@ -53,15 +53,25 @@ async def _sync(p: Plan, settings: dict, price_changed: bool) -> str | None:
         return "Saved, but not on sale yet: add your Stripe secret key under Billing to sell this plan."
     stripe = Stripe(settings["stripe_secret_key"])
     try:
+        if p.stripe_product_id:
+            try:
+                await stripe.update_product(p.stripe_product_id, p.name, p.description)
+            except StripeError as e:
+                if not e.missing:
+                    raise
+                # saved under other Stripe keys (test vs live, or another account): start fresh in this one
+                p.stripe_product_id = p.stripe_price_id = None
         if not p.stripe_product_id:
             p.stripe_product_id = (await stripe.create_product(p.name, p.description, p.id))["id"]
-        else:
-            await stripe.update_product(p.stripe_product_id, p.name, p.description)
         if price_changed or not p.stripe_price_id:
             old = p.stripe_price_id
             p.stripe_price_id = (await stripe.create_price(p.stripe_product_id, p.price_cents, p.currency, p.interval, p.id))["id"]
             if old:   # Stripe prices can't change; existing subscribers stay on the old price until they switch
-                await stripe.archive_price(old)
+                try:
+                    await stripe.archive_price(old)
+                except StripeError as e:
+                    if not e.missing:
+                        raise
     except StripeError as e:
         return f"Saved, but Stripe said: {e}"
     return None

@@ -62,11 +62,18 @@ async def checkout(body: CheckoutIn, request: Request, user: User = Depends(secu
         raise HTTPException(409, "You already have a subscription. Change or cancel it under Manage billing.")
     base = get_config().public_url
     try:
-        if not user.stripe_customer_id:
-            user.stripe_customer_id = (await stripe.create_customer(user.email, user.display_name, user.id))["id"]
-            await db.commit()
-        session = await stripe.checkout(user.stripe_customer_id, plan.stripe_price_id, user.id,
-                                        f"{base}/account?billing=success", f"{base}/pricing?billing=cancelled")
+        for attempt in range(2):
+            if not user.stripe_customer_id:
+                user.stripe_customer_id = (await stripe.create_customer(user.email, user.display_name, user.id))["id"]
+                await db.commit()
+            try:
+                session = await stripe.checkout(user.stripe_customer_id, plan.stripe_price_id, user.id,
+                                                f"{base}/account?billing=success", f"{base}/pricing?billing=cancelled")
+                break
+            except StripeError as e:
+                if attempt or not (e.missing and "customer" in str(e).lower()):
+                    raise
+                user.stripe_customer_id = None   # saved under other Stripe keys: make a customer in this account
     except StripeError as e:
         raise HTTPException(424, f"Stripe: {e}") from e
     audit.record(db, "billing.checkout_started", request=request, actor=user, target=user, plan=plan.name)
@@ -83,6 +90,10 @@ async def portal(user: User = Depends(security.current_user), db: AsyncSession =
     try:
         session = await stripe.portal(user.stripe_customer_id, f"{get_config().public_url}/account")
     except StripeError as e:
+        if e.missing:   # saved under other Stripe keys
+            user.stripe_customer_id = None
+            await db.commit()
+            raise HTTPException(400, "You don't have a billing account yet.") from e
         raise HTTPException(424, f"Stripe: {e}") from e
     return {"url": session["url"]}
 
