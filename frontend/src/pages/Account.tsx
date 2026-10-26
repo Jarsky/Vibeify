@@ -1,11 +1,11 @@
-import { CreditCard, Download, KeyRound, LogOut, Monitor, Smartphone, Trash2 } from "lucide-react";
+import { CreditCard, Download, KeyRound, LogOut, Mail, Monitor, Smartphone, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { api, googleStartUrl, money } from "../api";
+import { api, appleStartUrl, googleStartUrl, money, spotifyStartUrl } from "../api";
 import { useSession } from "../session";
 import { Button, Card, errorText, Field, formatDate, linkButton, Notice, timeAgo, useToast } from "../ui";
 import { openBillingPortal } from "./Pricing";
-import { GoogleIcon, SpotifyIcon } from "./SignInOptions";
+import { AppleIcon, GoogleIcon, PROVIDER_LABELS, SpotifyIcon } from "./SignInOptions";
 import { UsageMeters } from "./Usage";
 
 function PlanCard() {
@@ -99,10 +99,98 @@ async function downloadExport(toast: ReturnType<typeof useToast>) {
   } catch (e) { toast(errorText(e), "error"); }
 }
 
+const inUse = (name: string) => `That ${name} account already belongs to another account here that has its own playlists or settings.
+  Sign in with ${name} and delete that account (or unlink ${name} from it), then link it here.`;
 const ERRORS: Record<string, string> = {
-  spotify_in_use: "That Spotify account is already connected to a different account here.",
-  google_in_use: "That Google account is already used by a different account here.",
+  spotify_in_use: inUse("Spotify"),
+  google_in_use: inUse("Google"),
+  apple_in_use: inUse("Apple"),
 };
+
+const PROVIDER_ICONS: Record<string, React.ReactNode> = {
+  spotify: <span className="text-[#1ed760]"><SpotifyIcon /></span>, google: <GoogleIcon />, apple: <AppleIcon />,
+  email: <Mail className="size-5 text-zinc-300" />,
+};
+
+function SignInMethods() {
+  const { me, config, refresh } = useSession();
+  const toast = useToast();
+  const [busy, setBusy] = useState("");
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  if (!me || !config) return null;
+  const s = config.sign_in;
+  const linked = new Set(me.sign_in_methods);
+  const enabled: Record<string, boolean> = { spotify: s.spotify_site_app || s.spotify_own_app, google: s.google, apple: s.apple, email: s.email };
+  const rows = ["spotify", "google", "apple", "email"].filter((p) => linked.has(p) || enabled[p]);
+  const only = linked.size <= 1;
+  const run = async (key: string, fn: () => Promise<unknown>, ok: string) => {
+    setBusy(key);
+    try { await fn(); await refresh(); toast(ok); } catch (e) { toast(errorText(e), "error"); } finally { setBusy(""); }
+  };
+  const detail = (p: string) => {
+    if (p === "spotify" && me.spotify) return me.spotify.display_name || me.spotify.spotify_user_id;
+    if (p === "email") return me.email;
+    return me.identities.find((i) => i.provider === p)?.email ?? null;
+  };
+  const linkAction = (p: string) => {
+    if (p === "spotify") return s.spotify_site_app
+      ? <a href={spotifyStartUrl({ mode: "link", returnTo: "/account" })} className={linkButton("secondary")}>Link</a>
+      : <Link to="/connect-spotify" className={linkButton("secondary")}>Link</Link>;
+    if (p === "google") return <a href={googleStartUrl({ mode: "link", returnTo: "/account" })} className={linkButton("secondary")}>Link</a>;
+    if (p === "apple") return <a href={appleStartUrl({ mode: "link", returnTo: "/account" })} className={linkButton("secondary")}>Link</a>;
+    if (!me.email) return <span className="text-xs text-zinc-500">Link Google or Apple first to add an email</span>;
+    if (!me.email_verified) return (
+      <Button loading={busy === "confirm"} onClick={() => run("confirm", () => api("/me/email/confirm", { method: "POST" }),
+        `Check ${me.email} for a confirmation link`)}>Confirm email</Button>
+    );
+    return null;   // verified email, no password: the form below sets one
+  };
+  const setPassword = (e: React.FormEvent) => {
+    e.preventDefault();
+    run("pw", () => api("/me/password", { body: { current_password: current, new_password: next } }),
+      me.has_password ? "Password updated" : "Password set: you can now sign in with your email").then(() => { setCurrent(""); setNext(""); });
+  };
+
+  return (
+    <Card title="Sign-in methods">
+      <p className="-mt-1 mb-4 text-sm text-zinc-400">Any of these signs you in to this same account. Keep at least one.</p>
+      <ul className="divide-y divide-white/5">
+        {rows.map((p) => {
+          const on = linked.has(p);
+          const ident = me.identities.find((i) => i.provider === p);
+          return (
+            <li key={p} className="flex flex-wrap items-center justify-between gap-3 py-3">
+              <div className="flex min-w-0 items-center gap-3">
+                <span className="grid size-10 shrink-0 place-items-center rounded-full bg-ink-850">{PROVIDER_ICONS[p]}</span>
+                <div className="min-w-0">
+                  <p className="text-zinc-100">{PROVIDER_LABELS[p]}</p>
+                  <p className="truncate text-xs text-zinc-500">{on
+                    ? [detail(p), ident && `linked ${formatDate(ident.linked_at)}`].filter(Boolean).join(" · ") || "Linked"
+                    : enabled[p] ? "Not linked" : "Turned off on this site"}</p>
+                </div>
+              </div>
+              {on ? (
+                <Button variant="ghost" className="border border-white/10" loading={busy === p} disabled={only}
+                  title={only ? "This is your only way to sign in. Link another one first." : undefined}
+                  onClick={() => confirm(`Unlink ${PROVIDER_LABELS[p]}?${p === "spotify" ? " You'll need Spotify connected to make playlists." : ""}`)
+                    && run(p, () => api(`/me/sign-in/${p}`, { method: "DELETE" }), `${PROVIDER_LABELS[p]} unlinked`)}>Unlink</Button>
+              ) : enabled[p] && linkAction(p)}
+            </li>
+          );
+        })}
+      </ul>
+      {me.email && me.email_verified && (enabled.email || me.has_password) && (
+        <form className="mt-4 grid gap-3 border-t border-white/5 pt-4 sm:grid-cols-[1fr_1fr_auto]" onSubmit={setPassword}>
+          {me.has_password && <input className="input" type="password" autoComplete="current-password" placeholder="Current password" value={current} onChange={(e) => setCurrent(e.target.value)} />}
+          <input className={`input ${me.has_password ? "" : "sm:col-span-2"}`} type="password" autoComplete="new-password"
+            placeholder={me.has_password ? "New password" : `Set a password to sign in as ${me.email}`} value={next} onChange={(e) => setNext(e.target.value)} />
+          <Button loading={busy === "pw"} disabled={next.length < 10}>{me.has_password ? "Change password" : "Set password"}</Button>
+        </form>
+      )}
+    </Card>
+  );
+}
 
 const KEY_HELP: Record<string, { url: string; placeholder: string; model: string }> = {
   anthropic: { url: "https://console.anthropic.com/settings/keys", placeholder: "sk-ant-…", model: "claude-opus-5-5" },
@@ -175,17 +263,15 @@ export default function Account() {
   const nav = useNavigate();
   const [params] = useSearchParams();
   const [name, setName] = useState(me?.display_name ?? "");
-  const [current, setCurrent] = useState("");
-  const [next, setNext] = useState("");
   const [busy, setBusy] = useState("");
   if (!me || !config) return null;
   const error = params.get("error");
+  const linked = params.get("linked");
 
   const run = async (key: string, fn: () => Promise<unknown>, ok?: string) => {
     setBusy(key);
     try { await fn(); await refresh(); if (ok) toast(ok); } catch (e) { toast(errorText(e), "error"); } finally { setBusy(""); }
   };
-  const has = (m: string) => me.sign_in_methods.includes(m);
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
@@ -194,6 +280,7 @@ export default function Account() {
         <p className="mt-1 text-zinc-400">Member since {formatDate(me.created_at)}</p>
       </div>
       {error && <Notice tone="error">{ERRORS[error] ?? "Something went wrong."}</Notice>}
+      {linked && PROVIDER_LABELS[linked] && <Notice tone="success">{PROVIDER_LABELS[linked]} is now linked. You can sign in with it next time.</Notice>}
       {params.get("billing") === "success" && <Notice tone="success">Thanks for subscribing! Your plan updates as soon as Stripe confirms the payment (usually a few seconds).</Notice>}
 
       <Card title="Profile">
@@ -237,22 +324,7 @@ export default function Account() {
 
       <OwnKeys />
 
-      <Card title="Sign-in">
-        <ul className="mb-5 flex flex-wrap gap-2">
-          {me.sign_in_methods.map((m) => <li key={m} className="rounded-full border border-white/10 bg-ink-850 px-3 py-1 text-sm capitalize text-zinc-300">{m}</li>)}
-        </ul>
-        {config.sign_in.google && !has("google") && (
-          <a href={googleStartUrl("/account")} className={linkButton("secondary", "mb-5")}><GoogleIcon /> Link Google</a>
-        )}
-        {me.email ? (
-          <form className="grid gap-3 sm:grid-cols-[1fr_1fr_auto]" onSubmit={(e) => { e.preventDefault();
-            run("pw", () => api("/me/password", { body: { current_password: current, new_password: next } }), "Password updated").then(() => { setCurrent(""); setNext(""); }); }}>
-            {me.has_password && <input className="input" type="password" autoComplete="current-password" placeholder="Current password" value={current} onChange={(e) => setCurrent(e.target.value)} />}
-            <input className={`input ${me.has_password ? "" : "sm:col-span-2"}`} type="password" autoComplete="new-password" placeholder={me.has_password ? "New password" : "Set a password (10+ characters)"} value={next} onChange={(e) => setNext(e.target.value)} />
-            <Button loading={busy === "pw"} disabled={next.length < 10}>{me.has_password ? "Change" : "Set password"}</Button>
-          </form>
-        ) : <p className="text-sm text-zinc-500">{config.sign_in.google ? "Link Google to add an email address and a backup way to sign in." : "You sign in with Spotify."}</p>}
-      </Card>
+      <SignInMethods />
 
       <Devices />
 

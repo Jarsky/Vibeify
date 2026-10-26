@@ -32,7 +32,7 @@ export default function Overview() {
   const s = config.sign_in;
   const setupIssues = [
     !s.spotify_site_app && !s.spotify_own_app && "No Spotify sign-in method is on.",
-    !s.spotify_site_app && !s.google && !s.email && s.spotify_own_app && "Only “own Spotify app” sign-in is on; consider Google or email accounts too.",
+    !s.spotify_site_app && !s.google && !s.apple && !s.email && s.spotify_own_app && "Only “own Spotify app” sign-in is on; consider Google, Apple or email accounts too.",
   ].filter(Boolean) as string[];
   const peak = Math.max(1, ...stats.per_day.map((d) => d.requests));
 

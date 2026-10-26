@@ -40,13 +40,18 @@ export const spotifyStartUrl = (opts: { mode: "login" | "link"; clientId?: strin
   return `/api/auth/spotify/start?${q}`;
 };
 
-export const googleStartUrl = (returnTo?: string) =>
-  `/api/auth/google/start${returnTo ? `?return_to=${encodeURIComponent(returnTo)}` : ""}`;
+const oidcStartUrl = (provider: "google" | "apple") => (opts: { mode?: "login" | "link"; returnTo?: string } = {}) => {
+  const q = new URLSearchParams({ mode: opts.mode ?? "login" });
+  if (opts.returnTo) q.set("return_to", opts.returnTo);
+  return `/api/auth/${provider}/start?${q}`;
+};
+export const googleStartUrl = oidcStartUrl("google");
+export const appleStartUrl = oidcStartUrl("apple");
 
 // ── types ────────────────────────────────────────────────────────────────────
 export type SiteConfig = {
   site_name: string; site_tagline: string; signup_open: boolean;
-  sign_in: { spotify_site_app: boolean; spotify_own_app: boolean; google: boolean; email: boolean };
+  sign_in: { spotify_site_app: boolean; spotify_own_app: boolean; google: boolean; apple: boolean; email: boolean };
   spotify_redirect_uri: string; allow_user_llm_keys: boolean; allow_model_choice: boolean; community_feed: boolean; support_enabled: boolean; max_playlist_size: number; billing_enabled: boolean;
   provider_kinds: Record<string, string>; signed_in: boolean;
 };
@@ -56,6 +61,7 @@ export type ModelOption = { id: string; label: string; kind: string; own_key: bo
 export type Me = {
   id: string; display_name: string; email: string | null; email_verified: boolean; avatar_url: string | null;
   is_admin: boolean; has_password: boolean; created_at: string; sign_in_methods: string[];
+  identities: { provider: string; email: string | null; linked_at: string }[];
   spotify: null | { spotify_user_id: string; display_name: string; uses_site_app: boolean; client_id: string; connected_at: string };
   llm_keys: { kind: string; model_id: string; base_url: string | null; key_hint: string }[];
   models: ModelOption[];

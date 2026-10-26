@@ -1,10 +1,10 @@
 import { CheckCircle2, MailCheck } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { api } from "../api";
+import { api, type Me } from "../api";
 import { useSession } from "../session";
 import { Button, errorText, Field, Notice } from "../ui";
-import SignInOptions, { SIGNIN_ERRORS } from "./SignInOptions";
+import SignInOptions, { PROVIDER_LABELS, SIGNIN_ERRORS } from "./SignInOptions";
 
 function AuthCard({ title, subtitle, children }: { title: string; subtitle?: ReactNode; children: ReactNode }) {
   return (
@@ -22,11 +22,15 @@ export function SignIn() {
   const [params] = useSearchParams();
   const { config, me } = useSession();
   const error = params.get("error");
+  const link = params.get("link");
   const next = params.get("next") || undefined;
   if (me) return <AuthCard title="You're signed in"><Link className="text-aqua" to="/">Go to your home page →</Link></AuthCard>;
   return (
     <AuthCard title={`Sign in to ${config?.site_name ?? ""}`} subtitle="New here? Signing in creates your account.">
       {error && <div className="mb-4"><Notice tone="error">{SIGNIN_ERRORS[error] ?? "Sign-in didn't work. Please try again."}</Notice></div>}
+      {link && PROVIDER_LABELS[link] && <div className="mb-4"><Notice tone="warn">
+        An account here already uses the email address from your {PROVIDER_LABELS[link]} account. Sign in to it below
+        (within 15 minutes, in this browser) and {PROVIDER_LABELS[link]} will be linked to it automatically.</Notice></div>}
       <SignInOptions next={next} />
     </AuthCard>
   );
@@ -77,9 +81,10 @@ function PasswordForm({ endpoint, title, subtitle, askName }: { endpoint: string
     if (password !== confirm) return setError("The passwords don't match.");
     setBusy(true);
     try {
-      await api(endpoint, { body: { token, password, display_name: name } });
+      const r = await api<{ linked: string | null }>(endpoint, { body: { token, password, display_name: name } });
       await refresh();
-      nav("/connect-spotify");
+      const me = await api<Me>("/me");
+      nav(r.linked ? `/account?linked=${r.linked}` : me.spotify ? "/account" : "/connect-spotify");
     } catch (err) { setError(errorText(err)); } finally { setBusy(false); }
   };
   if (!token) return <AuthCard title={title}><Notice tone="error">This link is incomplete. Open it straight from the email.</Notice></AuthCard>;

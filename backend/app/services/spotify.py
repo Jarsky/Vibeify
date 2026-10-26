@@ -22,6 +22,7 @@ TOKEN_URL = "https://accounts.spotify.com/api/token"
 API = "https://api.spotify.com/v1"
 SCOPES = " ".join([
     "user-read-private",
+    "user-read-email",
     "playlist-read-private",
     "playlist-modify-private",
     "playlist-modify-public",

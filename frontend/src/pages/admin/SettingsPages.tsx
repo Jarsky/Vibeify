@@ -13,15 +13,19 @@ export function SignInSettings() {
   const { config } = useSession();
   const [googleSecret, setGoogleSecret] = useState("");
   const [spotifySecret, setSpotifySecret] = useState("");
+  const [appleKey, setAppleKey] = useState("");
   if (!settings || !config) return <Spinner />;
   const set = (k: string) => (v: any) => setSettings({ ...settings, [k]: v });
   const googleRedirect = config.spotify_redirect_uri.replace("/spotify/callback", "/google/callback");
+  const appleRedirect = config.spotify_redirect_uri.replace("/spotify/callback", "/apple/callback");
   const submit = () => save({
     signup_open: settings.signup_open, auth_spotify_site_app: settings.auth_spotify_site_app, auth_spotify_byo: settings.auth_spotify_byo,
     auth_google: settings.auth_google, auth_email: settings.auth_email, spotify_client_id: settings.spotify_client_id,
     google_client_id: settings.google_client_id, ...(googleSecret ? { google_client_secret: googleSecret } : {}),
     ...(spotifySecret ? { spotify_client_secret: spotifySecret } : {}),
-  }).then((ok) => { if (ok) { setGoogleSecret(""); setSpotifySecret(""); } });
+    auth_apple: settings.auth_apple, apple_client_id: settings.apple_client_id, apple_team_id: settings.apple_team_id,
+    apple_key_id: settings.apple_key_id, ...(appleKey ? { apple_private_key: appleKey } : {}),
+  }).then((ok) => { if (ok) { setGoogleSecret(""); setSpotifySecret(""); setAppleKey(""); } });
 
   return (
     <div className="space-y-6">
@@ -52,6 +56,24 @@ export function SignInSettings() {
             <Field label="Client ID"><input className="input font-mono" value={settings.google_client_id} onChange={(e) => set("google_client_id")(e.target.value.trim())} /></Field>
             <Field label="Client secret"><SecretInput isSet={settings.google_client_secret} value={googleSecret} onChange={setGoogleSecret} /></Field>
           </div>
+        </div>
+      </Card>
+      <Card title="Apple">
+        <div className="space-y-5">
+          <Toggle checked={settings.auth_apple} onChange={set("auth_apple")} label="Sign in with Apple"
+            hint="Needs a paid Apple Developer account. People can choose to hide their email, so those accounts won't match by email; they can still link Apple from Account settings." />
+          <p className="text-sm text-zinc-400">In Certificates, Identifiers & Profiles: create an App ID with <i>Sign in with Apple</i>, then a <i>Services ID</i> for
+            the website (domain <code className="text-mint">{new URL(appleRedirect).host}</code>, return URL <code className="text-mint">{appleRedirect}</code>),
+            then a key with <i>Sign in with Apple</i> enabled. Download the .p8 key file and paste its contents below.</p>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <Field label="Services ID"><input className="input font-mono" value={settings.apple_client_id} placeholder="nz.vibeify.signin" onChange={(e) => set("apple_client_id")(e.target.value.trim())} /></Field>
+            <Field label="Team ID"><input className="input font-mono" value={settings.apple_team_id} onChange={(e) => set("apple_team_id")(e.target.value.trim())} /></Field>
+            <Field label="Key ID"><input className="input font-mono" value={settings.apple_key_id} onChange={(e) => set("apple_key_id")(e.target.value.trim())} /></Field>
+          </div>
+          <Field label="Private key (.p8)" hint={settings.apple_private_key ? "A key is saved. Paste a new one to replace it." : undefined}>
+            <textarea className="input min-h-28 font-mono text-xs" value={appleKey} onChange={(e) => setAppleKey(e.target.value)}
+              placeholder={"-----BEGIN PRIVATE KEY-----\n…\n-----END PRIVATE KEY-----"} spellCheck={false} />
+          </Field>
         </div>
       </Card>
       <Card title="Email">

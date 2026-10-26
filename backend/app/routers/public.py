@@ -22,6 +22,7 @@ async def site_config(user: User | None = Depends(security.optional_user), db: A
             "spotify_site_app": bool(s["auth_spotify_site_app"] and s["spotify_client_id"]),
             "spotify_own_app": bool(s["auth_spotify_byo"]),
             "google": bool(s["auth_google"] and s["google_client_id"] and s["google_client_secret"]),
+            "apple": bool(s["auth_apple"] and settings_store.apple_ready(s)),
             "email": bool(s["auth_email"] and settings_store.email_ready(s)),
         },
         "spotify_redirect_uri": spotify_redirect_uri(),

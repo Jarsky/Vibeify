@@ -7,10 +7,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import audit, crypto, entitlements, security, settings_store
+from .. import audit, crypto, entitlements, mailer, ratelimit, security, settings_store
+from ..config import get_config
 from ..db import get_db, utcnow
 from ..models import AuditLog, Generation, Identity, Session, SpotifyConnection, SupportTicket, UsageLog, User, UserLLMKey
 from . import billing
+from .auth import PROVIDER_NAMES, _issue_token
 from ..services.llm import registry
 from ..services.llm.base import PROVIDER_KINDS, LLMError
 
@@ -36,6 +38,10 @@ async def _membership(db: AsyncSession, user: User, settings: dict) -> dict:
     }
 
 
+def _methods(user: User, idents) -> set[str]:
+    return {i.provider for i in idents} | ({"email"} if user.password_hash else set())
+
+
 @router.get("")
 async def me(user: User = Depends(security.current_user), db: AsyncSession = Depends(get_db)):
     settings = await settings_store.load(db)
@@ -47,7 +53,9 @@ async def me(user: User = Depends(security.current_user), db: AsyncSession = Dep
         "id": user.id, "display_name": user.display_name, "email": user.email, "email_verified": user.email_verified,
         "avatar_url": user.avatar_url, "is_admin": user.is_admin, "has_password": bool(user.password_hash),
         "created_at": user.created_at,
-        "sign_in_methods": sorted({i.provider for i in idents}),
+        "sign_in_methods": sorted(_methods(user, idents)),
+        "identities": [{"provider": i.provider, "email": i.email, "linked_at": i.created_at}
+                       for i in sorted(idents, key=lambda i: i.created_at)],
         "spotify": None if not conn else {
             "spotify_user_id": conn.spotify_user_id, "display_name": conn.display_name,
             "uses_site_app": conn.uses_site_app, "client_id": conn.client_id, "connected_at": conn.created_at,
@@ -71,16 +79,31 @@ async def update_profile(body: ProfileIn, user: User = Depends(security.current_
     return {"ok": True}
 
 
-@router.delete("/spotify")
-async def disconnect_spotify(request: Request, user: User = Depends(security.current_user), db: AsyncSession = Depends(get_db)):
+@router.delete("/sign-in/{provider}")
+async def unlink(provider: str, request: Request, user: User = Depends(security.current_user), db: AsyncSession = Depends(get_db)):
+    """Remove a way to sign in. Spotify also drops the Spotify connection; email also removes the password."""
+    if provider not in PROVIDER_NAMES:
+        raise HTTPException(404, "Unknown sign-in method.")
     idents = (await db.execute(select(Identity).where(Identity.user_id == user.id))).scalars().all()
-    if all(i.provider == "spotify" for i in idents) and not user.password_hash:
-        raise HTTPException(400, "Spotify is your only way to sign in. Add a password or Google first.")
-    await db.execute(delete(SpotifyConnection).where(SpotifyConnection.user_id == user.id))
-    await db.execute(delete(Identity).where(Identity.user_id == user.id, Identity.provider == "spotify"))
-    audit.record(db, "account.spotify_disconnect", request=request, actor=user, target=user)
+    methods = _methods(user, idents)
+    conn = await db.get(SpotifyConnection, user.id) if provider == "spotify" else None
+    if provider not in methods and conn is None:
+        raise HTTPException(404, f"{PROVIDER_NAMES[provider]} isn't linked to your account.")
+    if not methods - {provider}:
+        raise HTTPException(400, f"{PROVIDER_NAMES[provider]} is your only way to sign in. Link another one first.")
+    if conn:
+        await db.delete(conn)
+    if provider == "email":
+        user.password_hash = None
+    await db.execute(delete(Identity).where(Identity.user_id == user.id, Identity.provider == provider))
+    audit.record(db, "account.unlink", request=request, actor=user, target=user, provider=provider)
     await db.commit()
     return {"ok": True}
+
+
+@router.delete("/spotify")
+async def disconnect_spotify(request: Request, user: User = Depends(security.current_user), db: AsyncSession = Depends(get_db)):
+    return await unlink("spotify", request, user, db)
 
 
 class KeyIn(BaseModel):
@@ -125,6 +148,23 @@ async def delete_llm_key(kind: str, request: Request, user: User = Depends(secur
     return {"ok": True}
 
 
+@router.post("/email/confirm")
+async def confirm_email(request: Request, user: User = Depends(security.current_user), db: AsyncSession = Depends(get_db)):
+    """Email a link that confirms the account's address and sets a password (adds email sign-in)."""
+    settings = await settings_store.load(db)
+    if not settings_store.email_ready(settings):
+        raise HTTPException(503, "This site can't send email yet.")
+    if not user.email:
+        raise HTTPException(400, "Your account has no email address. Link Google or Apple to add one.")
+    ratelimit.limit(f"confirm-email:{user.id}", 3, 3600)
+    token = await _issue_token(db, user.email, "verify", 24, user_id=user.id)
+    text, html = mailer.link_email(settings, heading="Confirm your email",
+                                   body="Click below to confirm this address and choose a password for signing in with email.",
+                                   button="Confirm email", url=f"{get_config().public_url}/verify-email?token={token}")
+    await mailer.send(settings, user.email, f"Confirm your email for {settings['site_name']}", text, html)
+    return {"ok": True}
+
+
 class PasswordIn(BaseModel):
     current_password: str = ""
     new_password: str
@@ -137,10 +177,14 @@ async def change_password(body: PasswordIn, request: Request, user: User = Depen
         raise HTTPException(400, "Your current password is wrong.")
     if not user.email:
         raise HTTPException(400, "Add an email address to your account before setting a password.")
+    if not user.email_verified:
+        raise HTTPException(400, "Confirm your email address before setting a password.")
     if problem := security.password_problem(body.new_password):
         raise HTTPException(400, problem)
     had_password = bool(user.password_hash)
     user.password_hash = security.hash_password(body.new_password)
+    if not (await db.execute(select(Identity).where(Identity.provider == "email", Identity.subject == user.email))).first():
+        db.add(Identity(user_id=user.id, provider="email", subject=user.email, email=user.email))
     audit.record(db, "account.password_changed" if had_password else "account.password_set", request=request, actor=user, target=user)
     await db.commit()
     return {"ok": True}

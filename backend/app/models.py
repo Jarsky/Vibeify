@@ -44,7 +44,7 @@ class User(Base):
 
 
 class Identity(Base):
-    """A way to sign in to an account: spotify (subject = Spotify user id), google (sub), email (address)."""
+    """A way to sign in to an account: spotify (subject = Spotify user id), google / apple (sub), email (address)."""
 
     __tablename__ = "identities"
     __table_args__ = (UniqueConstraint("provider", "subject"),)
@@ -53,6 +53,7 @@ class Identity(Base):
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     provider: Mapped[str] = mapped_column(String(20))
     subject: Mapped[str] = mapped_column(String(320))
+    email: Mapped[str | None] = mapped_column(String(320))   # the address the provider reported, shown in account settings
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
 
     user: Mapped[User] = relationship(back_populates="identities")
@@ -98,6 +99,7 @@ class EmailToken(Base):
     token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
     email: Mapped[str] = mapped_column(String(320), index=True)
     purpose: Mapped[str] = mapped_column(String(20))   # "verify" | "reset"
+    user_id: Mapped[str | None] = mapped_column(String(32))   # set when a signed-in user asked to confirm their address
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     expires_at: Mapped[datetime] = mapped_column()
     used_at: Mapped[datetime | None] = mapped_column()

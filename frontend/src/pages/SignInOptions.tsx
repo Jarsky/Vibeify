@@ -1,7 +1,7 @@
 import { KeyRound, Mail } from "lucide-react";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { api, googleStartUrl, spotifyStartUrl } from "../api";
+import { api, appleStartUrl, googleStartUrl, spotifyStartUrl } from "../api";
 import { useSession } from "../session";
 import { Button, errorText, linkButton, Notice } from "../ui";
 
@@ -21,11 +21,22 @@ export function GoogleIcon() {
   );
 }
 
+export function AppleIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="size-5" fill="currentColor" aria-hidden>
+      <path d="M16.37 12.6c-.02-2.3 1.88-3.4 1.96-3.46-1.07-1.56-2.73-1.78-3.32-1.8-1.41-.14-2.76.83-3.48.83-.72 0-1.82-.81-3-.79-1.54.02-2.96.9-3.76 2.28-1.6 2.78-.41 6.9 1.15 9.16.77 1.1 1.68 2.34 2.87 2.3 1.15-.05 1.59-.75 2.98-.75 1.39 0 1.78.75 3 .72 1.24-.02 2.02-1.12 2.78-2.23.87-1.28 1.23-2.52 1.25-2.58-.03-.01-2.4-.92-2.43-3.68ZM14.1 5.85c.63-.77 1.06-1.83.94-2.9-.91.04-2.02.61-2.67 1.37-.58.67-1.1 1.76-.96 2.8 1.02.08 2.06-.52 2.69-1.27Z" />
+    </svg>
+  );
+}
+
+export const PROVIDER_LABELS: Record<string, string> = { spotify: "Spotify", google: "Google", apple: "Apple", email: "Email & password" };
+
 export const SIGNIN_ERRORS: Record<string, string> = {
   expired: "That sign-in took too long or was opened in another browser. Please try again.",
   cancelled: "Sign-in was cancelled.",
   spotify: "Spotify sign-in didn't work. Please try again.",
   google: "Google sign-in didn't work. Please try again.",
+  apple: "Sign in with Apple didn't work. Please try again.",
   signups_closed: "New sign-ups are closed on this site right now.",
   disabled: "This account has been disabled.",
 };
@@ -39,15 +50,15 @@ export default function SignInOptions({ next }: { next?: string }) {
   const [error, setError] = useState("");
   if (!config) return null;
   const s = config.sign_in;
-  const nothing = !s.spotify_site_app && !s.spotify_own_app && !s.google && !s.email;
+  const nothing = !s.spotify_site_app && !s.spotify_own_app && !s.google && !s.apple && !s.email;
 
   const login = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true); setError("");
     try {
-      await api("/auth/email/login", { body: { email, password } });
+      const r = await api<{ linked: string | null }>("/auth/email/login", { body: { email, password } });
       await refresh();
-      nav(next || "/");
+      nav(r.linked ? `/account?linked=${r.linked}` : next || "/");
     } catch (err) { setError(errorText(err)); } finally { setBusy(false); }
   };
 
@@ -60,7 +71,10 @@ export default function SignInOptions({ next }: { next?: string }) {
         </a>
       )}
       {s.google && (
-        <a href={googleStartUrl(next)} className={linkButton("secondary", "w-full py-3")}><GoogleIcon /> Continue with Google</a>
+        <a href={googleStartUrl({ returnTo: next })} className={linkButton("secondary", "w-full py-3")}><GoogleIcon /> Continue with Google</a>
+      )}
+      {s.apple && (
+        <a href={appleStartUrl({ returnTo: next })} className={linkButton("secondary", "w-full py-3")}><AppleIcon /> Continue with Apple</a>
       )}
       {s.spotify_own_app && (
         <Link to="/connect-spotify" className={linkButton("ghost", "w-full border border-dashed border-white/15")}>

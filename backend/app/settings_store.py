@@ -18,12 +18,17 @@ DEFAULTS: dict[str, Any] = {
     "auth_spotify_site_app": True,      # "Continue with Spotify" through the site's own Spotify app
     "auth_spotify_byo": True,           # users may connect through their own Spotify app (Client ID)
     "auth_google": False,
+    "auth_apple": False,
     "auth_email": False,
     # credentials
     "spotify_client_id": "",
     "spotify_client_secret": "",
     "google_client_id": "",
     "google_client_secret": "",
+    "apple_client_id": "",              # the Services ID, e.g. nz.vibeify.signin
+    "apple_team_id": "",
+    "apple_key_id": "",
+    "apple_private_key": "",            # contents of the .p8 key file
     # email
     "smtp_host": "",
     "smtp_port": 587,
@@ -50,7 +55,7 @@ DEFAULTS: dict[str, Any] = {
     "stripe_secret_key": "",
     "stripe_webhook_secret": "",
 }
-SECRET_KEYS = {"spotify_client_secret", "google_client_secret", "smtp_password", "stripe_secret_key", "stripe_webhook_secret"}
+SECRET_KEYS = {"spotify_client_secret", "google_client_secret", "apple_private_key", "smtp_password", "stripe_secret_key", "stripe_webhook_secret"}
 
 
 async def load(db: AsyncSession) -> dict[str, Any]:
@@ -85,3 +90,7 @@ def public_view(values: dict[str, Any]) -> dict[str, Any]:
 
 def email_ready(values: dict[str, Any]) -> bool:
     return bool(values["smtp_host"] and values["smtp_from"])
+
+
+def apple_ready(values: dict[str, Any]) -> bool:
+    return bool(values["apple_client_id"] and values["apple_team_id"] and values["apple_key_id"] and values["apple_private_key"])
