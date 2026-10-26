@@ -19,10 +19,23 @@ class Entitlements:
     edit_playlists: bool
     playlist_seeds: bool
     allowed_model_ids: list[str] | None   # None = every enabled model
+    default_model_id: str | None          # None = the site's default model
+    allow_model_choice: bool
+
+
+# A paid plan outlives its billing period by this much at most, even if Stripe's "subscription ended" webhook never arrives
+EXPIRY_GRACE = timedelta(days=3)
+
+
+def subscription_lapsed(user: User, now: datetime | None = None) -> bool:
+    if user.plan_source != "stripe" or user.subscription_period_end is None:
+        return False
+    end = user.subscription_period_end.replace(tzinfo=user.subscription_period_end.tzinfo or timezone.utc)
+    return end + EXPIRY_GRACE < (now or datetime.now(timezone.utc))
 
 
 async def user_plan(db: AsyncSession, user: User) -> Plan | None:
-    if user.plan_id:
+    if user.plan_id and not subscription_lapsed(user):
         plan = await db.get(Plan, user.plan_id)
         if plan:
             return plan
@@ -49,6 +62,9 @@ async def for_user(db: AsyncSession, user: User, settings: dict) -> Entitlements
         edit_playlists=plan.allow_edit_playlists if plan else True,
         playlist_seeds=plan.allow_playlist_seeds if plan else True,
         allowed_model_ids=user.allowed_model_ids if user.allowed_model_ids is not None else (plan.allowed_model_ids if plan else None),
+        default_model_id=plan.default_model_id if plan else None,
+        allow_model_choice=bool(settings.get("allow_model_choice") if plan is None or plan.allow_model_choice is None
+                                else plan.allow_model_choice),
     )
 
 

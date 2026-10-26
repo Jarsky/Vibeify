@@ -1,13 +1,16 @@
-"""Admin: membership plans (synced to Stripe products/prices) and the Stripe connection."""
+"""Admin: membership plans (synced to Stripe products/prices), promotions and the Stripe connection."""
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import audit, security, settings_store
+from .. import audit, promotions, security, settings_store
 from ..config import get_config
 from ..db import get_db
-from ..models import Plan, User
+from ..models import LLMModel, Plan, Promotion, User
 from ..services.stripe import Stripe, StripeError
 from .billing import plan_view
 
@@ -35,6 +38,16 @@ class PlanIn(BaseModel):
     allow_edit_playlists: bool = True
     allow_playlist_seeds: bool = True
     allowed_model_ids: list[str] | None = None
+    default_model_id: str | None = None
+    allow_model_choice: bool | None = None
+
+
+async def _check_models(db: AsyncSession, body: PlanIn) -> None:
+    if body.default_model_id:
+        if await db.get(LLMModel, body.default_model_id) is None:
+            raise HTTPException(400, "That default model doesn't exist any more.")
+        if body.allowed_model_ids is not None and body.default_model_id not in body.allowed_model_ids:
+            raise HTTPException(400, "The plan's default model must be one of the models it allows.")
 
 
 async def _admin_view(db: AsyncSession, p: Plan, settings: dict) -> dict:
@@ -42,7 +55,8 @@ async def _admin_view(db: AsyncSession, p: Plan, settings: dict) -> dict:
     return {**plan_view(p, settings), "active": p.active, "sort_order": p.sort_order, "members": members,
             "stripe_price_id": p.stripe_price_id, "stripe_product_id": p.stripe_product_id,
             "raw": {k: getattr(p, k) for k in ("daily_generation_limit", "daily_token_limit", "monthly_token_limit",
-                                                "max_playlist_size", "allowed_model_ids")}}
+                                                "max_playlist_size", "allowed_model_ids", "default_model_id",
+                                                "allow_model_choice")}}
 
 
 async def _sync(p: Plan, settings: dict, price_changed: bool) -> str | None:
@@ -77,7 +91,7 @@ async def _sync(p: Plan, settings: dict, price_changed: bool) -> str | None:
     return None
 
 
-PLAN_FIELDS = ["name", "price_cents", "currency", "interval", "is_default", "active", "daily_generation_limit", "daily_token_limit", "monthly_token_limit", "max_playlist_size", "allow_edit_playlists", "allow_playlist_seeds", "allowed_model_ids"]
+PLAN_FIELDS = ["name", "price_cents", "currency", "interval", "is_default", "active", "daily_generation_limit", "daily_token_limit", "monthly_token_limit", "max_playlist_size", "allow_edit_playlists", "allow_playlist_seeds", "allowed_model_ids", "default_model_id", "allow_model_choice"]
 
 
 @router.get("/plans")
@@ -94,6 +108,7 @@ async def _only_default(db: AsyncSession, keep: Plan) -> None:
 @router.post("/plans")
 async def create_plan(body: PlanIn, request: Request, me: User = Depends(security.admin_user), db: AsyncSession = Depends(get_db)):
     settings = await settings_store.load(db)
+    await _check_models(db, body)
     data = body.model_dump()
     data["currency"] = (data["currency"] or settings["billing_currency"]).lower()
     data["perks"] = [x.strip() for x in data["perks"] if x.strip()]
@@ -115,6 +130,7 @@ async def update_plan(plan_id: str, body: PlanIn, request: Request, me: User = D
     p = await db.get(Plan, plan_id)
     if not p:
         raise HTTPException(404, "Plan not found.")
+    await _check_models(db, body)
     data = body.model_dump()
     data["currency"] = (data["currency"] or p.currency).lower()
     data["perks"] = [x.strip() for x in data["perks"] if x.strip()]
@@ -168,3 +184,96 @@ async def resync(db: AsyncSession = Depends(get_db)):
             warnings.append(f"{p.name}: {w}")
     await db.commit()
     return {"ok": not warnings, "warnings": warnings}
+
+
+# ── promotions ───────────────────────────────────────────────────────────────
+class PromotionIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    code: str | None = Field(None, max_length=40, pattern=r"^\s*[A-Za-z0-9_-]*\s*$")
+    plan_ids: list[str] | None = None
+    trial_days: int | None = Field(None, ge=1, le=730)
+    percent_off: int | None = Field(None, ge=1, le=100)
+    duration: str = Field("once", pattern="^(once|repeating|forever)$")
+    duration_months: int | None = Field(None, ge=1, le=36)
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+    max_redemptions: int | None = Field(None, ge=1)
+    first_subscription_only: bool = True
+    active: bool = True
+
+
+PROMO_FIELDS = ["name", "code", "plan_ids", "trial_days", "percent_off", "duration", "duration_months", "starts_at", "ends_at",
+                "max_redemptions", "first_subscription_only", "active"]
+COUPON_TERMS = ("percent_off", "duration", "duration_months", "name")   # a Stripe coupon can't change these
+
+
+def _promo_admin_view(p: Promotion) -> dict:
+    return {**promotions.view(p), "code": p.code, "starts_at": p.starts_at, "max_redemptions": p.max_redemptions,
+            "redemptions": p.redemptions, "reserved": p.reserved, "active": p.active, "status": promotions.status(p)}
+
+
+async def _promo_data(db: AsyncSession, body: PromotionIn, current: Promotion | None) -> dict:
+    data = body.model_dump()
+    data["code"] = promotions.normalise_code(data["code"])
+    if not data["trial_days"] and not data["percent_off"]:
+        raise HTTPException(400, "Give the promotion free days, a discount, or both.")
+    if data["duration"] == "repeating" and not data["duration_months"]:
+        raise HTTPException(400, "Say how many months the discount lasts.")
+    if data["duration"] != "repeating":
+        data["duration_months"] = None
+    if data["starts_at"] and data["ends_at"] and data["ends_at"] <= data["starts_at"]:
+        raise HTTPException(400, "The end date must be after the start date.")
+    if data["code"]:
+        clash = await promotions.by_code(db, data["code"])
+        if clash and (current is None or clash.id != current.id):
+            raise HTTPException(400, f"Another promotion already uses the code {data['code']}.")
+    return data
+
+
+@router.get("/promotions")
+async def list_promotions(db: AsyncSession = Depends(get_db)):
+    rows = (await db.execute(select(Promotion).order_by(Promotion.created_at.desc()))).scalars().all()
+    return [_promo_admin_view(p) for p in rows]
+
+
+@router.post("/promotions")
+async def create_promotion(body: PromotionIn, request: Request, me: User = Depends(security.admin_user),
+                           db: AsyncSession = Depends(get_db)):
+    p = Promotion(**await _promo_data(db, body, None))
+    db.add(p)
+    await db.flush()
+    audit.record(db, "admin.promotion.create", request=request, actor=me, target_type="promotion", target_id=p.id,
+                 target_label=p.name, summary=promotions.describe(p), code=p.code)
+    await db.commit()
+    return _promo_admin_view(p)
+
+
+@router.patch("/promotions/{promo_id}")
+async def update_promotion(promo_id: str, body: PromotionIn, request: Request, me: User = Depends(security.admin_user),
+                           db: AsyncSession = Depends(get_db)):
+    p = await db.get(Promotion, promo_id)
+    if not p:
+        raise HTTPException(404, "Promotion not found.")
+    data = await _promo_data(db, body, p)
+    before = audit.snapshot(p, PROMO_FIELDS)
+    if any(data[k] != getattr(p, k) for k in COUPON_TERMS):
+        p.stripe_coupon_id = None   # new terms need a new coupon; people already subscribed keep the old one
+    for k, v in data.items():
+        setattr(p, k, v)
+    if changes := audit.diff(p, PROMO_FIELDS, before):
+        audit.record(db, "admin.promotion.update", request=request, actor=me, target_type="promotion", target_id=p.id,
+                     target_label=p.name, changes=jsonable_encoder(changes))
+    await db.commit()
+    return _promo_admin_view(p)
+
+
+@router.delete("/promotions/{promo_id}")
+async def delete_promotion(promo_id: str, request: Request, me: User = Depends(security.admin_user),
+                           db: AsyncSession = Depends(get_db)):
+    p = await db.get(Promotion, promo_id)
+    if p:
+        audit.record(db, "admin.promotion.delete", request=request, actor=me, target_type="promotion", target_id=p.id,
+                     target_label=p.name)
+        await db.delete(p)
+        await db.commit()
+    return {"ok": True}

@@ -82,11 +82,21 @@ class Stripe:
     async def create_customer(self, email: str | None, name: str, user_id: str) -> dict:
         return await self.call("POST", "/customers", {"email": email, "name": name or None, "metadata": {"user_id": user_id}})
 
-    async def checkout(self, customer: str, price: str, user_id: str, success_url: str, cancel_url: str) -> dict:
+    async def create_coupon(self, data: dict) -> dict:
+        return await self.call("POST", "/coupons", data)
+
+    async def checkout(self, customer: str, price: str, user_id: str, success_url: str, cancel_url: str,
+                       coupon: str | None = None, trial_days: int | None = None, promotion_id: str | None = None,
+                       expires_at: int | None = None) -> dict:
+        # Promotion codes are entered on our pricing page (they can carry free trials, which Stripe's codes can't),
+        # so Stripe's own code box stays off.
+        metadata = {"user_id": user_id, "promotion_id": promotion_id}
         return await self.call("POST", "/checkout/sessions", {
             "mode": "subscription", "customer": customer, "client_reference_id": user_id,
             "line_items": [{"price": price, "quantity": 1}], "success_url": success_url, "cancel_url": cancel_url,
-            "allow_promotion_codes": True, "subscription_data": {"metadata": {"user_id": user_id}},
+            "discounts": [{"coupon": coupon}] if coupon else None, "metadata": {"promotion_id": promotion_id},
+            "expires_at": expires_at,
+            "subscription_data": {"metadata": metadata, "trial_period_days": trial_days},
         })
 
     async def portal(self, customer: str, return_url: str) -> dict:

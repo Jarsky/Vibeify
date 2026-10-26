@@ -7,10 +7,11 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import audit, security, settings_store
+from .. import audit, promotions, ratelimit, security, settings_store
 from ..config import get_config
 from ..db import get_db
-from ..models import BillingEvent, Plan, User
+from ..models import BillingEvent, Plan, Promotion, User
+from ..services.llm.registry import _site_models
 from ..services.stripe import Stripe, StripeError, subscription_fields, verify_webhook
 
 log = logging.getLogger("vibeify.billing")
@@ -18,7 +19,17 @@ router = APIRouter(prefix="/api", tags=["billing"])
 LIVE_STATUSES = {"active", "trialing", "past_due"}   # past_due keeps access while Stripe retries the card
 
 
-def plan_view(p: Plan, settings: dict) -> dict:
+def plan_models(p: Plan, settings: dict, models: list) -> dict:
+    """The AI models a plan's members get: the one they start on, and the others they may switch to."""
+    usable = [m for m in models if p.allowed_model_ids is None or m.id in p.allowed_model_ids]
+    default = (next((m for m in usable if m.id == p.default_model_id), None) or next((m for m in usable if m.is_default), None)
+               or (usable[0] if usable else None))
+    choice = settings["allow_model_choice"] if p.allow_model_choice is None else p.allow_model_choice
+    names = [m.display_name for m in (usable if choice else [default] if default else [])]
+    return {"models": names, "model_choice": bool(choice and len(names) > 1)}
+
+
+def plan_view(p: Plan, settings: dict, models: list | None = None, promotion: Promotion | None = None) -> dict:
     return {
         "id": p.id, "name": p.name, "description": p.description, "perks": p.perks or [], "price_cents": p.price_cents,
         "currency": p.currency, "interval": p.interval, "is_default": p.is_default, "highlight": p.highlight,
@@ -30,14 +41,38 @@ def plan_view(p: Plan, settings: dict) -> dict:
             "max_playlist_size": p.max_playlist_size or settings["max_playlist_size"],
         },
         "features": {"edit_playlists": p.allow_edit_playlists, "playlist_seeds": p.allow_playlist_seeds},
+        **(plan_models(p, settings, models) if models is not None else {}),
+        "promotion": promotions.view(promotion) if promotion else None,
     }
 
 
 @router.get("/plans")
-async def public_plans(db: AsyncSession = Depends(get_db)):
+async def public_plans(db: AsyncSession = Depends(get_db), user: User | None = Depends(security.optional_user)):
     settings = await settings_store.load(db)
-    rows = await db.execute(select(Plan).where(Plan.active | Plan.is_default).order_by(Plan.sort_order, Plan.price_cents))
-    return {"billing_enabled": settings["billing_enabled"], "plans": [plan_view(p, settings) for p in rows.scalars()]}
+    rows = (await db.execute(select(Plan).where(Plan.active | Plan.is_default).order_by(Plan.sort_order, Plan.price_cents))).scalars().all()
+    models = await _site_models(db)
+    out = []
+    for p in rows:
+        promo = await promotions.automatic(db, p, user) if settings["billing_enabled"] and p.price_cents > 0 else None
+        out.append(plan_view(p, settings, models, promo))
+    return {"billing_enabled": settings["billing_enabled"], "plans": out}
+
+
+class PromoIn(BaseModel):
+    code: str
+
+
+@router.post("/billing/promo", dependencies=[Depends(security.csrf_guard)])
+async def check_promo(body: PromoIn, request: Request, db: AsyncSession = Depends(get_db),
+                      user: User | None = Depends(security.optional_user)):
+    """Look up a promotion code for the pricing page. Checkout checks it again."""
+    ratelimit.limit(f"promo:{security.client_ip(request)}", 10, 600)
+    promo = await promotions.by_code(db, body.code)
+    if promo is None:
+        raise HTTPException(404, "That code isn't valid.")
+    if why := promotions.problem(promo, None, user):
+        raise HTTPException(400, why)
+    return promotions.view(promo)
 
 
 def _stripe(settings: dict) -> Stripe:
@@ -48,6 +83,7 @@ def _stripe(settings: dict) -> Stripe:
 
 class CheckoutIn(BaseModel):
     plan_id: str
+    promo_code: str | None = None
 
 
 @router.post("/billing/checkout", dependencies=[Depends(security.csrf_guard)])
@@ -60,23 +96,47 @@ async def checkout(body: CheckoutIn, request: Request, user: User = Depends(secu
         raise HTTPException(400, "That plan isn't available.")
     if user.stripe_subscription_id and user.subscription_status in LIVE_STATUSES:
         raise HTTPException(409, "You already have a subscription. Change or cancel it under Manage billing.")
+    if body.promo_code and body.promo_code.strip():
+        promo = await promotions.by_code(db, body.promo_code)
+        if promo is None:
+            raise HTTPException(400, "That code isn't valid.")
+        if why := promotions.problem(promo, plan, user):
+            raise HTTPException(400, why)
+    else:
+        promo = await promotions.automatic(db, plan, user)
+    if promo and not await promotions.reserve(db, promo):
+        raise HTTPException(400, "That promotion has just been fully claimed.")
     base = get_config().public_url
     try:
-        for attempt in range(2):
+        for attempt in range(3):
             if not user.stripe_customer_id:
                 user.stripe_customer_id = (await stripe.create_customer(user.email, user.display_name, user.id))["id"]
                 await db.commit()
             try:
+                coupon = await promotions.coupon(stripe, promo) if promo else None
                 session = await stripe.checkout(user.stripe_customer_id, plan.stripe_price_id, user.id,
-                                                f"{base}/account?billing=success", f"{base}/pricing?billing=cancelled")
+                                                f"{base}/account?billing=success", f"{base}/pricing?billing=cancelled",
+                                                coupon=coupon, trial_days=promo.trial_days if promo else None,
+                                                promotion_id=promo.id if promo else None,
+                                                expires_at=promotions.checkout_expiry(promo) if promo else None)
                 break
             except StripeError as e:
-                if attempt or not (e.missing and "customer" in str(e).lower()):
+                if attempt == 2 or not e.missing:
                     raise
-                user.stripe_customer_id = None   # saved under other Stripe keys: make a customer in this account
+                # saved under other Stripe keys (test vs live): make it again in this account
+                if "customer" in str(e).lower():
+                    user.stripe_customer_id = None
+                elif "coupon" in str(e).lower() and promo:
+                    promo.stripe_coupon_id = None
+                else:
+                    raise
     except StripeError as e:
+        if promo:
+            await promotions.release(db, promo.id, used=False)
+            await db.commit()
         raise HTTPException(424, f"Stripe: {e}") from e
-    audit.record(db, "billing.checkout_started", request=request, actor=user, target=user, plan=plan.name)
+    audit.record(db, "billing.checkout_started", request=request, actor=user, target=user, plan=plan.name,
+                 promotion=promo.name if promo else None)
     await db.commit()
     return {"url": session["url"]}
 
@@ -153,6 +213,8 @@ def _summary(kind: str, obj: dict) -> tuple[str, int | None]:
     cur = obj.get("currency")
     if kind == "checkout.session.completed":
         return "Checkout completed", obj.get("amount_total")
+    if kind == "checkout.session.expired":
+        return "Checkout abandoned", None
     if kind.startswith("customer.subscription."):
         f = subscription_fields(obj)
         end = " (cancels at period end)" if f["cancel_at_period_end"] else ""
@@ -194,6 +256,10 @@ async def webhook(request: Request, db: AsyncSession = Depends(get_db)):
     user = None
     if kind == "checkout.session.completed" and obj.get("mode") == "subscription" and obj.get("subscription"):
         user = await _user_for(db, obj.get("customer"), obj.get("client_reference_id"))
+        promo_id = (obj.get("metadata") or {}).get("promotion_id")
+        if promo_id and (promo := await db.get(Promotion, promo_id)):
+            await promotions.release(db, promo.id, used=True)
+            audit.record(db, "billing.promotion_redeemed", actor_label="Stripe", target=user, promotion=promo.name)
         if user:
             if not user.stripe_customer_id:
                 user.stripe_customer_id = obj.get("customer")
@@ -201,6 +267,10 @@ async def webhook(request: Request, db: AsyncSession = Depends(get_db)):
                 await apply_subscription(db, user, await Stripe(settings["stripe_secret_key"]).subscription(obj["subscription"]))
             except StripeError as e:
                 raise HTTPException(500, f"Stripe: {e}") from e   # 5xx makes Stripe retry
+    elif kind == "checkout.session.expired":   # abandoned: give a held promotion use back
+        user = await _user_for(db, obj.get("customer"), obj.get("client_reference_id"))
+        if promo_id := (obj.get("metadata") or {}).get("promotion_id"):
+            await promotions.release(db, promo_id, used=False)
     elif kind.startswith("customer.subscription."):
         user = await _user_for(db, obj.get("customer"), (obj.get("metadata") or {}).get("user_id"))
         if user:

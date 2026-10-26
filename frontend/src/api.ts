@@ -81,6 +81,13 @@ export type Plan = {
   is_default: boolean; highlight: boolean; purchasable: boolean;
   limits: { daily_requests: number; daily_tokens: number; monthly_tokens: number; max_playlist_size: number };
   features: { edit_playlists: boolean; playlist_seeds: boolean };
+  models: string[]; model_choice: boolean; promotion: Promotion | null;
+};
+
+export type Promotion = {
+  id: string; name: string; summary: string; trial_days: number | null; percent_off: number | null;
+  duration: "once" | "repeating" | "forever"; duration_months: number | null; ends_at: string | null;
+  first_subscription_only: boolean; plan_ids: string[] | null; has_code: boolean;
 };
 
 export const money = (cents: number, currency: string) =>

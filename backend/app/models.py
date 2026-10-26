@@ -219,8 +219,34 @@ class Plan(Base):
     allow_edit_playlists: Mapped[bool] = mapped_column(Boolean, default=True)
     allow_playlist_seeds: Mapped[bool] = mapped_column(Boolean, default=True)
     allowed_model_ids: Mapped[list[str] | None] = mapped_column(JSON)
+    default_model_id: Mapped[str | None] = mapped_column(String(32))     # LLMModel members start on; NULL = site default
+    allow_model_choice: Mapped[bool | None] = mapped_column(Boolean)      # NULL = the site setting
     stripe_product_id: Mapped[str | None] = mapped_column(String(64))
     stripe_price_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+
+
+class Promotion(Base):
+    """A free trial and/or a percentage off paid plans at checkout: automatic (no code) or for people who enter the code."""
+
+    __tablename__ = "promotions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(80))                          # shown on the pricing page, e.g. "Launch special"
+    code: Mapped[str | None] = mapped_column(String(40), unique=True)      # upper case; NULL = applies automatically
+    plan_ids: Mapped[list[str] | None] = mapped_column(JSON)               # NULL = every paid plan
+    trial_days: Mapped[int | None] = mapped_column(Integer)
+    percent_off: Mapped[int | None] = mapped_column(Integer)
+    duration: Mapped[str] = mapped_column(String(10), default="once")      # once | repeating | forever (Stripe coupon terms)
+    duration_months: Mapped[int | None] = mapped_column(Integer)           # for "repeating"
+    starts_at: Mapped[datetime | None] = mapped_column()
+    ends_at: Mapped[datetime | None] = mapped_column()
+    max_redemptions: Mapped[int | None] = mapped_column(Integer)
+    redemptions: Mapped[int] = mapped_column(Integer, default=0)         # completed checkouts
+    reserved: Mapped[int] = mapped_column(Integer, default=0)            # checkouts started and still open
+    first_subscription_only: Mapped[bool] = mapped_column(Boolean, default=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    stripe_coupon_id: Mapped[str | None] = mapped_column(String(64))       # made at first checkout; cleared when the terms change
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
 
 

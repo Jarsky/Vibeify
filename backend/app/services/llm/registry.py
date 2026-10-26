@@ -47,14 +47,19 @@ async def _site_models(db: AsyncSession) -> list[LLMModel]:
 
 async def available_models(db: AsyncSession, user: User, settings: dict) -> list[ModelOption]:
     options = []
-    allowed = (await entitlements.for_user(db, user, settings)).allowed_model_ids
+    ent = await entitlements.for_user(db, user, settings)
+    allowed = ent.allowed_model_ids
     for m in await _site_models(db):
         if allowed is not None and m.id not in allowed:
             continue
         options.append(ModelOption(m.id, m.display_name, m.provider.kind, m.model_id, False, m.is_default))
-    if options and not settings.get("allow_model_choice"):   # only the site's preferred model
-        options = [next((o for o in options if o.is_default), options[0])]
-        options[0].is_default = True
+    # the plan's model, else the site default, else the first one the plan allows
+    preferred = (next((o for o in options if o.id == ent.default_model_id), None)
+                 or next((o for o in options if o.is_default), None) or (options[0] if options else None))
+    for o in options:
+        o.is_default = o is preferred
+    if preferred and not ent.allow_model_choice:   # only the plan's / site's preferred model
+        options = [preferred]
     if settings.get("allow_user_llm_keys"):
         for k in (await db.execute(select(UserLLMKey).where(UserLLMKey.user_id == user.id))).scalars():
             options.append(ModelOption(f"own:{k.kind}", f"{k.model_id} (your {KIND_LABELS.get(k.kind, k.kind)} key)",
