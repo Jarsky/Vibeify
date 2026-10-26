@@ -156,7 +156,7 @@ function StripeSettings() {
           <Button variant="ghost" onClick={async () => {
             try { const r = await api<{ warnings: string[] }>("/admin/plans/resync", { method: "POST" }); toast(r.warnings.length ? r.warnings.join(" ") : "Plans synced to Stripe", r.warnings.length ? "error" : "success"); }
             catch (e) { toast(errorText(e), "error"); }
-          }}><RefreshCw className="size-4" /> Sync plans to Stripe</Button>
+          }}><RefreshCw className="size-4" /> Sync plans & codes to Stripe</Button>
         </div>
       </div>
     </Card>
@@ -252,7 +252,7 @@ function BillingEvents() {
 }
 
 type AdminPromotion = Promotion & { code: string | null; starts_at: string | null; max_redemptions: number | null; redemptions: number;
-  reserved: number; active: boolean; status: string };
+  reserved: number; active: boolean; status: string; on_stripe: boolean; warning: string | null };
 
 const PROMO_EMPTY = { name: "", code: "", plan_ids: null as string[] | null, trial_days: "", percent_off: "", duration: "once",
   duration_months: "", starts_at: "", ends_at: "", max_redemptions: "", first_subscription_only: true, active: true };
@@ -264,7 +264,7 @@ const promoDraft = (p: AdminPromotion): PromoDraft => ({
   max_redemptions: p.max_redemptions?.toString() ?? "", first_subscription_only: p.first_subscription_only, active: p.active,
 });
 const promoBody = (d: PromoDraft) => ({
-  name: d.name, code: d.code.trim() || null, plan_ids: d.plan_ids, trial_days: num(d.trial_days), percent_off: num(d.percent_off),
+  name: d.name, code: d.code.trim() || null, plan_ids: d.plan_ids, trial_days: d.code.trim() ? null : num(d.trial_days), percent_off: num(d.percent_off),
   duration: d.duration, duration_months: d.duration === "repeating" ? num(d.duration_months) : null,
   starts_at: d.starts_at ? new Date(`${d.starts_at}T00:00:00`).toISOString() : null,
   ends_at: d.ends_at ? new Date(`${d.ends_at}T23:59:59`).toISOString() : null,
@@ -281,11 +281,12 @@ function PromotionEditor({ initial, plans, onSave, onCancel, saving }: { initial
     <div className="space-y-5 rounded-xl border border-white/10 bg-ink-850/60 p-4">
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Name" hint="Shown to customers, e.g. “Launch special”."><input className="input" value={d.name} maxLength={80} onChange={(e) => set("name")(e.target.value)} /></Field>
-        <Field label="Code" hint="Leave blank to apply automatically to everyone who qualifies.">
+        <Field label="Code" hint="Typed on Stripe's payment page; discounts only. Leave blank to apply automatically to everyone who qualifies.">
           <input className="input font-mono uppercase" value={d.code} maxLength={40} onChange={(e) => set("code")(e.target.value.replace(/[^A-Za-z0-9_-]/g, "").toUpperCase())} placeholder="SUMMER25" /></Field>
       </div>
       <div className="grid gap-3 sm:grid-cols-4">
-        <Field label="Free trial (days)"><input className="input" inputMode="numeric" value={d.trial_days} onChange={digits("trial_days")} placeholder="e.g. 30" /></Field>
+        <Field label="Free trial (days)" hint={d.code ? "Not possible with a code" : undefined}>
+          <input className="input" inputMode="numeric" value={d.code ? "" : d.trial_days} onChange={digits("trial_days")} placeholder="e.g. 30" disabled={!!d.code} /></Field>
         <Field label="% off"><input className="input" inputMode="numeric" value={d.percent_off} onChange={digits("percent_off")} placeholder="e.g. 50" /></Field>
         <Field label="Discount lasts"><select className="input" value={d.duration} onChange={(e) => set("duration")(e.target.value)} disabled={!d.percent_off}>
           <option value="once">First payment</option><option value="repeating">Some months</option><option value="forever">Forever</option></select></Field>
@@ -315,7 +316,7 @@ function PromotionEditor({ initial, plans, onSave, onCancel, saving }: { initial
         <Toggle checked={d.active} onChange={set("active")} label="Active" hint="Turn off to pause it." />
       </div>
       <div className="flex gap-2">
-        <Button variant="primary" loading={saving} disabled={!d.name.trim() || (!d.trial_days && !d.percent_off)} onClick={() => onSave(d)}>Save promotion</Button>
+        <Button variant="primary" loading={saving} disabled={!d.name.trim() || (d.code ? !d.percent_off : !d.trial_days && !d.percent_off)} onClick={() => onSave(d)}>Save promotion</Button>
         <Button variant="ghost" onClick={onCancel}>Cancel</Button>
       </div>
     </div>
@@ -334,8 +335,8 @@ function Promotions({ plans }: { plans: AdminPlan[] }) {
   const save = async (id: string, d: PromoDraft) => {
     setSaving(true);
     try {
-      await api(id === "new" ? "/admin/promotions" : `/admin/promotions/${id}`, { method: id === "new" ? "POST" : "PATCH", body: promoBody(d) });
-      toast("Promotion saved"); setEditing(null); load();
+      const r = await api<AdminPromotion>(id === "new" ? "/admin/promotions" : `/admin/promotions/${id}`, { method: id === "new" ? "POST" : "PATCH", body: promoBody(d) });
+      toast(r.warning ?? (r.code ? `Saved. ${r.code} works on Stripe's payment page.` : "Promotion saved"), r.warning ? "error" : "success"); setEditing(null); load();
     } catch (e) { toast(errorText(e), "error"); } finally { setSaving(false); }
   };
   const remove = async (p: AdminPromotion) => {
@@ -344,9 +345,9 @@ function Promotions({ plans }: { plans: AdminPlan[] }) {
   };
   return (
     <Card title="Promotions" actions={editing !== "new" && <Button onClick={() => setEditing("new")}><Plus className="size-4" /> New promotion</Button>}>
-      <p className="-mt-1 mb-4 text-sm text-zinc-400">Free trials and discounts at checkout. Automatic ones show on the pricing page;
-        code ones apply when someone enters the code there (or opens <code className="text-mint">/pricing?code=CODE</code>).
-        Changing a discount doesn't affect people already using it.</p>
+      <p className="-mt-1 mb-4 text-sm text-zinc-400">Automatic promotions (free trials and discounts) show on the pricing page and apply at checkout.
+        Code promotions become Stripe promotion codes that customers type on Stripe's payment page; Stripe enforces their limits.
+        Stripe hides its code box when an automatic discount already applies. Changing a discount doesn't affect people already using it.</p>
       <div className="space-y-3">
         {editing === "new" && <PromotionEditor initial={PROMO_EMPTY} plans={plans} saving={saving} onSave={(d) => save("new", d)} onCancel={() => setEditing(null)} />}
         {rows.map((p) => editing === p.id
@@ -356,7 +357,8 @@ function Promotions({ plans }: { plans: AdminPlan[] }) {
               <Sparkles className={`size-5 shrink-0 ${p.status === "Running" ? "text-mint" : "text-zinc-600"}`} />
               <div className="min-w-0 flex-1">
                 <p className="flex flex-wrap items-center gap-2 text-zinc-100">{p.name}
-                  {p.code ? <code className="rounded bg-ink-700 px-1.5 text-xs text-mint">{p.code}</code>
+                  {p.code ? <><code className="rounded bg-ink-700 px-1.5 text-xs text-mint">{p.code}</code>
+                    {!p.on_stripe && <span className="rounded bg-amber-400/15 px-1.5 text-[10px] uppercase text-amber-200" title="Save it again or use “Sync plans & codes to Stripe”">Not on Stripe</span>}</>
                     : <span className="rounded bg-ink-700 px-1.5 text-[10px] uppercase text-zinc-300">Automatic</span>}
                   {p.status !== "Running" && <span className="rounded bg-ink-700 px-1.5 text-[10px] uppercase text-zinc-500">{p.status}</span>}</p>
                 <p className="text-xs text-zinc-500">{p.summary} · {planNames(p.plan_ids)} · used {p.redemptions}{p.max_redemptions ? ` of ${p.max_redemptions}` : ""}{p.reserved ? ` (+${p.reserved} in checkout)` : ""}

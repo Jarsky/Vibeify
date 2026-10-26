@@ -246,7 +246,9 @@ class Promotion(Base):
     reserved: Mapped[int] = mapped_column(Integer, default=0)            # checkouts started and still open
     first_subscription_only: Mapped[bool] = mapped_column(Boolean, default=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
-    stripe_coupon_id: Mapped[str | None] = mapped_column(String(64))       # made at first checkout; cleared when the terms change
+    stripe_coupon_id: Mapped[str | None] = mapped_column(String(64))       # made at first use; cleared when the terms change
+    stripe_promotion_code_id: Mapped[str | None] = mapped_column(String(64))   # code promotions: the code customers type at Stripe
+    stripe_code_active: Mapped[bool] = mapped_column(Boolean, default=False)   # what Stripe was last told
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
 
 

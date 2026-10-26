@@ -183,6 +183,10 @@ async def resync(db: AsyncSession = Depends(get_db)):
         if (w := await _sync(p, settings, price_changed=False)):
             warnings.append(f"{p.name}: {w}")
     await db.commit()
+    for promo in (await db.execute(select(Promotion).where(Promotion.code.is_not(None)))).scalars().all():
+        if (w := await _push_code(db, promo)):
+            warnings.append(f"Promotion {promo.name}: {w}")
+    await db.commit()
     return {"ok": not warnings, "warnings": warnings}
 
 
@@ -205,11 +209,30 @@ class PromotionIn(BaseModel):
 PROMO_FIELDS = ["name", "code", "plan_ids", "trial_days", "percent_off", "duration", "duration_months", "starts_at", "ends_at",
                 "max_redemptions", "first_subscription_only", "active"]
 COUPON_TERMS = ("percent_off", "duration", "duration_months", "name")   # a Stripe coupon can't change these
+# nor can a Stripe promotion code: changing any of these makes a new code (and the old one is switched off)
+CODE_TERMS = (*COUPON_TERMS, "code", "plan_ids", "max_redemptions", "ends_at", "first_subscription_only")
 
 
-def _promo_admin_view(p: Promotion) -> dict:
+def _promo_admin_view(p: Promotion, warning: str | None = None) -> dict:
     return {**promotions.view(p), "code": p.code, "starts_at": p.starts_at, "max_redemptions": p.max_redemptions,
-            "redemptions": p.redemptions, "reserved": p.reserved, "active": p.active, "status": promotions.status(p)}
+            "redemptions": p.redemptions, "reserved": p.reserved, "active": p.active, "status": promotions.status(p),
+            "on_stripe": bool(p.stripe_promotion_code_id), "warning": warning}
+
+
+async def _push_code(db: AsyncSession, p: Promotion) -> str | None:
+    """Put a code promotion on Stripe (or take a former one off). Returns a warning instead of failing the save."""
+    settings = await settings_store.load(db)
+    if not settings["stripe_secret_key"]:
+        return "Saved, but the code won't work until your Stripe secret key is added under Billing." if p.code else None
+    try:
+        stripe = Stripe(settings["stripe_secret_key"])
+        if p.code:
+            await promotions.push_code(db, stripe, p)
+        else:
+            await promotions.retire_code(stripe, p)
+    except StripeError as e:
+        return f"Saved, but Stripe said: {e}"
+    return None
 
 
 async def _promo_data(db: AsyncSession, body: PromotionIn, current: Promotion | None) -> dict:
@@ -217,6 +240,9 @@ async def _promo_data(db: AsyncSession, body: PromotionIn, current: Promotion | 
     data["code"] = promotions.normalise_code(data["code"])
     if not data["trial_days"] and not data["percent_off"]:
         raise HTTPException(400, "Give the promotion free days, a discount, or both.")
+    if data["code"] and data["trial_days"]:
+        raise HTTPException(400, "Codes are typed on Stripe's checkout page, and Stripe codes can't give free days. "
+                                 "Use a discount for the code, or leave the code blank for an automatic free trial.")
     if data["duration"] == "repeating" and not data["duration_months"]:
         raise HTTPException(400, "Say how many months the discount lasts.")
     if data["duration"] != "repeating":
@@ -242,10 +268,11 @@ async def create_promotion(body: PromotionIn, request: Request, me: User = Depen
     p = Promotion(**await _promo_data(db, body, None))
     db.add(p)
     await db.flush()
+    warning = await _push_code(db, p) if p.code else None
     audit.record(db, "admin.promotion.create", request=request, actor=me, target_type="promotion", target_id=p.id,
                  target_label=p.name, summary=promotions.describe(p), code=p.code)
     await db.commit()
-    return _promo_admin_view(p)
+    return _promo_admin_view(p, warning)
 
 
 @router.patch("/promotions/{promo_id}")
@@ -256,15 +283,20 @@ async def update_promotion(promo_id: str, body: PromotionIn, request: Request, m
         raise HTTPException(404, "Promotion not found.")
     data = await _promo_data(db, body, p)
     before = audit.snapshot(p, PROMO_FIELDS)
-    if any(data[k] != getattr(p, k) for k in COUPON_TERMS):
+    changed = lambda k: promotions.normalised(data[k]) != promotions.normalised(getattr(p, k))  # noqa: E731
+    new_code = (data["code"] or p.code) and any(changed(k) for k in CODE_TERMS)
+    if any(changed(k) for k in COUPON_TERMS) or (data["code"] and changed("plan_ids")):
         p.stripe_coupon_id = None   # new terms need a new coupon; people already subscribed keep the old one
     for k, v in data.items():
         setattr(p, k, v)
+    warning = await _push_code(db, p) if new_code else None
     if changes := audit.diff(p, PROMO_FIELDS, before):
         audit.record(db, "admin.promotion.update", request=request, actor=me, target_type="promotion", target_id=p.id,
                      target_label=p.name, changes=jsonable_encoder(changes))
     await db.commit()
-    return _promo_admin_view(p)
+    if not new_code:   # paused/resumed or new dates: just switch the Stripe code on or off
+        await promotions.reconcile_codes(db, await settings_store.load(db))
+    return _promo_admin_view(p, warning)
 
 
 @router.delete("/promotions/{promo_id}")
@@ -272,6 +304,12 @@ async def delete_promotion(promo_id: str, request: Request, me: User = Depends(s
                            db: AsyncSession = Depends(get_db)):
     p = await db.get(Promotion, promo_id)
     if p:
+        settings = await settings_store.load(db)
+        if p.stripe_promotion_code_id and settings["stripe_secret_key"]:
+            try:
+                await promotions.retire_code(Stripe(settings["stripe_secret_key"]), p)
+            except StripeError as e:
+                raise HTTPException(424, f"Couldn't switch the code off in Stripe, so the promotion wasn't deleted: {e}") from e
         audit.record(db, "admin.promotion.delete", request=request, actor=me, target_type="promotion", target_id=p.id,
                      target_label=p.name)
         await db.delete(p)

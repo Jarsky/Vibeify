@@ -10,7 +10,7 @@ from app import settings_store
 from app.models import Plan, User
 from app.services.stripe import _form, sign_for_tests, verify_webhook
 
-from .conftest import sign_up
+from .conftest import connect_spotify, sign_up
 
 WEBHOOK_SECRET = "whsec_test"
 
@@ -95,6 +95,7 @@ async def test_default_plan_limits_features_and_overrides(client, outbox):
 @respx.mock
 async def test_checkout_webhook_and_cancel(client, outbox):
     await sign_up(client, outbox, "payer@example.com")
+    await connect_spotify("payer@example.com")
     me = (await client.get("/api/me")).json()
     await configure_stripe()
     async with app_db.sessionmaker()() as db:
@@ -148,6 +149,7 @@ async def test_missing_asset_is_404_not_html(client):
 async def test_ids_from_other_stripe_keys_are_replaced(client, outbox):
     """Switching test → live keys (or accounts): saved product, price and customer ids don't exist there."""
     await sign_up(client, outbox, "admin@example.com")
+    await connect_spotify("admin@example.com")
     await configure_stripe()
     async with app_db.sessionmaker()() as db:
         db.add(Plan(name="Pro", price_cents=500, currency="nzd", interval="month", active=True,
@@ -177,3 +179,15 @@ async def test_ids_from_other_stripe_keys_are_replaced(client, outbox):
 def _form_pairs(request):
     from urllib.parse import parse_qsl
     return parse_qsl(request.content.decode())
+
+
+async def test_checkout_needs_spotify(client, outbox):
+    await sign_up(client, outbox, "payer@example.com")
+    await configure_stripe()
+    async with app_db.sessionmaker()() as db:
+        pro = Plan(name="Pro", price_cents=500, currency="nzd", stripe_price_id="price_1")
+        db.add(pro)
+        await db.commit()
+        pro_id = pro.id
+    r = await client.post("/api/billing/checkout", json={"plan_id": pro_id})
+    assert r.status_code == 400 and "Connect your Spotify" in r.json()["detail"]

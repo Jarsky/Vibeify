@@ -1,7 +1,7 @@
-import { Check, Minus, Sparkles, Tag } from "lucide-react";
+import { Check, Minus, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { api, money, type Plan, type Promotion } from "../api";
+import { api, money, type Plan } from "../api";
 import { useSession } from "../session";
 import { Button, errorText, formatDate, linkButton, Notice, Spinner, useToast } from "../ui";
 
@@ -19,29 +19,17 @@ export default function Pricing() {
   const [params] = useSearchParams();
   const [data, setData] = useState<{ billing_enabled: boolean; plans: Plan[] } | null>(null);
   const [busy, setBusy] = useState("");
-  const [code, setCode] = useState(params.get("code") ?? "");
-  const [codePromo, setCodePromo] = useState<Promotion | null>(null);
-  const [codeError, setCodeError] = useState("");
-  const [checking, setChecking] = useState(false);
   useEffect(() => { api("/plans").then(setData).catch((e) => toast(errorText(e), "error")); }, [toast]);
   if (!data) return <Spinner />;
 
-  const applyCode = async (e: React.FormEvent) => {
-    e.preventDefault(); setChecking(true); setCodeError("");
-    try { setCodePromo(await api<Promotion>("/billing/promo", { body: { code } })); }
-    catch (err) { setCodePromo(null); setCodeError(errorText(err)); } finally { setChecking(false); }
-  };
-  // an entered code replaces any automatic promotion on the plans it covers
-  const promoFor = (p: Plan) => (codePromo && p.price_cents > 0 && (!codePromo.plan_ids || codePromo.plan_ids.includes(p.id)) ? codePromo : p.promotion);
-  const showCodeBox = data.billing_enabled && data.plans.some((p) => p.purchasable);
 
   const current = me?.membership.plan?.id;
   const subscribed = me && ["active", "trialing", "past_due"].includes(me.membership.status ?? "") && me.membership.source === "stripe";
+  const needsSpotify = !!me && !me.spotify && !subscribed;   // a plan is no use without Spotify, so checkout requires it
   const choose = async (p: Plan) => {
     if (subscribed) return openBillingPortal(toast);
     setBusy(p.id);
-    const promo_code = codePromo && promoFor(p) === codePromo ? code : undefined;
-    try { window.location.assign((await api<{ url: string }>("/billing/checkout", { body: { plan_id: p.id, promo_code } })).url); }
+    try { window.location.assign((await api<{ url: string }>("/billing/checkout", { body: { plan_id: p.id } })).url); }
     catch (e) { toast(errorText(e), "error"); setBusy(""); }
   };
 
@@ -53,19 +41,13 @@ export default function Pricing() {
       </div>
       {params.get("billing") === "cancelled" && <div className="mx-auto mt-6 max-w-xl"><Notice>Checkout was cancelled. Nothing was charged.</Notice></div>}
       {!data.plans.length && <p className="mt-10 text-center text-zinc-500">No plans are set up yet.</p>}
-      {showCodeBox && !subscribed && (
-        <form onSubmit={applyCode} className="mx-auto mt-6 flex max-w-sm gap-2">
-          <input className="input uppercase" value={code} onChange={(e) => { setCode(e.target.value); setCodeError(""); }} placeholder="Promo code" aria-label="Promo code" />
-          <Button loading={checking} disabled={!code.trim()}><Tag className="size-4" /> Apply</Button>
-        </form>
-      )}
-      {codeError && <div className="mx-auto mt-3 max-w-sm"><Notice tone="error">{codeError}</Notice></div>}
-      {codePromo && <div className="mx-auto mt-3 max-w-xl"><Notice tone="success"><b>{codePromo.name}</b>: {codePromo.summary}
-        {codePromo.plan_ids ? " on the plans marked below" : " on any paid plan"}.{codePromo.ends_at ? ` Ends ${formatDate(codePromo.ends_at)}.` : ""}</Notice></div>}
+      {needsSpotify && data.plans.some((p) => p.purchasable) && <div className="mx-auto mt-6 max-w-xl"><Notice tone="warn">
+        Connect your Spotify account before choosing a plan. Vibeify makes your playlists there.</Notice></div>}
+
       <div className="mx-auto mt-10 grid max-w-5xl gap-5" style={{ gridTemplateColumns: `repeat(auto-fit, minmax(15rem, 1fr))` }}>
         {data.plans.map((p) => {
           const isCurrent = current === p.id;
-          const promo = subscribed ? null : promoFor(p);
+          const promo = subscribed ? null : p.promotion;
           const discounted = promo?.percent_off ? Math.round(p.price_cents * (100 - promo.percent_off) / 100) : null;
           return (
             <div key={p.id} className={`card relative flex flex-col p-6 ${p.highlight ? "border-aqua/50 shadow-2xl shadow-aqua/10" : ""}`}>
@@ -98,6 +80,7 @@ export default function Pricing() {
               <div className="mt-6">
                 {isCurrent ? <span className={linkButton("secondary", "w-full cursor-default")}>Your plan</span>
                   : !me ? <Link to="/signin?next=/pricing" className={linkButton(p.highlight ? "primary" : "secondary", "w-full")}>Sign in to start</Link>
+                  : p.purchasable && needsSpotify ? <Link to="/connect-spotify?next=/pricing" className={linkButton("spotify", "w-full")}>Connect Spotify first</Link>
                   : p.purchasable ? <Button variant={p.highlight ? "primary" : "secondary"} className="w-full" loading={busy === p.id} onClick={() => choose(p)}>
                       {subscribed ? "Switch plan" : promo?.trial_days ? `Start ${promo.trial_days}-day free trial` : `Get ${p.name}`}</Button>
                   : p.is_default ? (subscribed ? <Button className="w-full" onClick={() => openBillingPortal(toast)}>Cancel subscription</Button> : null)
@@ -107,7 +90,8 @@ export default function Pricing() {
           );
         })}
       </div>
-      {data.billing_enabled && <p className="mt-8 text-center text-xs text-zinc-500">Payments are handled securely by Stripe. Cancel any time from your account.</p>}
+      {data.billing_enabled && <p className="mt-8 text-center text-xs text-zinc-500">Payments are handled securely by Stripe. Cancel any time from your account.
+        Have a promo code? Enter it on the payment page.</p>}
     </div>
   );
 }

@@ -7,10 +7,10 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import audit, promotions, ratelimit, security, settings_store
+from .. import audit, promotions, security, settings_store
 from ..config import get_config
 from ..db import get_db
-from ..models import BillingEvent, Plan, Promotion, User
+from ..models import BillingEvent, Plan, Promotion, SpotifyConnection, User
 from ..services.llm.registry import _site_models
 from ..services.stripe import Stripe, StripeError, subscription_fields, verify_webhook
 
@@ -49,6 +49,7 @@ def plan_view(p: Plan, settings: dict, models: list | None = None, promotion: Pr
 @router.get("/plans")
 async def public_plans(db: AsyncSession = Depends(get_db), user: User | None = Depends(security.optional_user)):
     settings = await settings_store.load(db)
+    await promotions.reconcile_codes(db, settings)
     rows = (await db.execute(select(Plan).where(Plan.active | Plan.is_default).order_by(Plan.sort_order, Plan.price_cents))).scalars().all()
     models = await _site_models(db)
     out = []
@@ -58,21 +59,7 @@ async def public_plans(db: AsyncSession = Depends(get_db), user: User | None = D
     return {"billing_enabled": settings["billing_enabled"], "plans": out}
 
 
-class PromoIn(BaseModel):
-    code: str
 
-
-@router.post("/billing/promo", dependencies=[Depends(security.csrf_guard)])
-async def check_promo(body: PromoIn, request: Request, db: AsyncSession = Depends(get_db),
-                      user: User | None = Depends(security.optional_user)):
-    """Look up a promotion code for the pricing page. Checkout checks it again."""
-    ratelimit.limit(f"promo:{security.client_ip(request)}", 10, 600)
-    promo = await promotions.by_code(db, body.code)
-    if promo is None:
-        raise HTTPException(404, "That code isn't valid.")
-    if why := promotions.problem(promo, None, user):
-        raise HTTPException(400, why)
-    return promotions.view(promo)
 
 
 def _stripe(settings: dict) -> Stripe:
@@ -83,7 +70,6 @@ def _stripe(settings: dict) -> Stripe:
 
 class CheckoutIn(BaseModel):
     plan_id: str
-    promo_code: str | None = None
 
 
 @router.post("/billing/checkout", dependencies=[Depends(security.csrf_guard)])
@@ -96,14 +82,10 @@ async def checkout(body: CheckoutIn, request: Request, user: User = Depends(secu
         raise HTTPException(400, "That plan isn't available.")
     if user.stripe_subscription_id and user.subscription_status in LIVE_STATUSES:
         raise HTTPException(409, "You already have a subscription. Change or cancel it under Manage billing.")
-    if body.promo_code and body.promo_code.strip():
-        promo = await promotions.by_code(db, body.promo_code)
-        if promo is None:
-            raise HTTPException(400, "That code isn't valid.")
-        if why := promotions.problem(promo, plan, user):
-            raise HTTPException(400, why)
-    else:
-        promo = await promotions.automatic(db, plan, user)
+    if await db.get(SpotifyConnection, user.id) is None:   # nothing to use a plan for without it
+        raise HTTPException(400, "Connect your Spotify account before choosing a plan.")
+    await promotions.reconcile_codes(db, settings)   # e.g. a code whose start date has just arrived
+    promo = await promotions.automatic(db, plan, user)
     if promo and not await promotions.reserve(db, promo):
         raise HTTPException(400, "That promotion has just been fully claimed.")
     base = get_config().public_url
@@ -257,8 +239,12 @@ async def webhook(request: Request, db: AsyncSession = Depends(get_db)):
     if kind == "checkout.session.completed" and obj.get("mode") == "subscription" and obj.get("subscription"):
         user = await _user_for(db, obj.get("customer"), obj.get("client_reference_id"))
         promo_id = (obj.get("metadata") or {}).get("promotion_id")
-        if promo_id and (promo := await db.get(Promotion, promo_id)):
+        promo = await db.get(Promotion, promo_id) if promo_id else None
+        if promo:
             await promotions.release(db, promo.id, used=True)
+        else:
+            promo = await promotions.count_code_redemption(db, obj)
+        if promo:
             audit.record(db, "billing.promotion_redeemed", actor_label="Stripe", target=user, promotion=promo.name)
         if user:
             if not user.stripe_customer_id:

@@ -49,12 +49,15 @@ class Stripe:
         self.key = secret_key
         self.http = http
 
-    async def call(self, method: str, path: str, data: dict | None = None, params: dict | None = None) -> dict:
+    async def call(self, method: str, path: str, data: dict | None = None, params: dict | None = None,
+                   version: str | None = None) -> dict:
+        headers = {"Content-Type": "application/x-www-form-urlencoded"} if data else {}
+        if version:
+            headers["Stripe-Version"] = version
         async with httpx.AsyncClient(timeout=30) as http:
             client = self.http or http
             r = await client.request(method, f"{API}{path}", auth=(self.key, ""), params=params,
-                                     content=urlencode(_form(data)) if data else None,
-                                     headers={"Content-Type": "application/x-www-form-urlencoded"} if data else None)
+                                     content=urlencode(_form(data)) if data else None, headers=headers or None)
         body = r.json() if r.content else {}
         if r.status_code >= 400:
             err = body.get("error") or {}
@@ -85,17 +88,28 @@ class Stripe:
     async def create_coupon(self, data: dict) -> dict:
         return await self.call("POST", "/coupons", data)
 
+    # Promotion codes changed shape in later API versions (coupon -> promotion[coupon]); pin the version these calls use
+    PROMO_CODE_VERSION = "2024-06-20"
+
+    async def create_promotion_code(self, data: dict) -> dict:
+        return await self.call("POST", "/promotion_codes", data, version=self.PROMO_CODE_VERSION)
+
+    async def update_promotion_code(self, code_id: str, data: dict) -> dict:
+        return await self.call("POST", f"/promotion_codes/{code_id}", data, version=self.PROMO_CODE_VERSION)
+
+    async def promotion_code(self, code_id: str) -> dict:
+        return await self.call("GET", f"/promotion_codes/{code_id}", version=self.PROMO_CODE_VERSION)
+
     async def checkout(self, customer: str, price: str, user_id: str, success_url: str, cancel_url: str,
                        coupon: str | None = None, trial_days: int | None = None, promotion_id: str | None = None,
                        expires_at: int | None = None) -> dict:
-        # Promotion codes are entered on our pricing page (they can carry free trials, which Stripe's codes can't),
-        # so Stripe's own code box stays off.
+        # Customers type promotion codes on Stripe's page. Stripe won't show the box when a discount is already applied.
         metadata = {"user_id": user_id, "promotion_id": promotion_id}
         return await self.call("POST", "/checkout/sessions", {
             "mode": "subscription", "customer": customer, "client_reference_id": user_id,
             "line_items": [{"price": price, "quantity": 1}], "success_url": success_url, "cancel_url": cancel_url,
             "discounts": [{"coupon": coupon}] if coupon else None, "metadata": {"promotion_id": promotion_id},
-            "expires_at": expires_at,
+            "expires_at": expires_at, "allow_promotion_codes": None if coupon else True,
             "subscription_data": {"metadata": metadata, "trial_period_days": trial_days},
         })
 

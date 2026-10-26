@@ -43,6 +43,8 @@ export default function ConnectSpotify() {
   const [clientId, setClientId] = useState(storedClientId);
   if (!config) return null;
   const error = params.get("error");
+  const rawNext = params.get("next");
+  const next = rawNext && rawNext.startsWith("/") && !rawNext.startsWith("//") ? rawNext : "/";   // e.g. back to /pricing
   const app = params.get("app");
   const mode = me ? "link" : "login";
   const trimmed = clientId.trim().toLowerCase();
@@ -85,7 +87,7 @@ export default function ConnectSpotify() {
               <h2 className="font-semibold text-white">Quick connect</h2>
               <p className="text-sm text-zinc-400">Use {config.site_name}'s Spotify app. Nothing to set up.</p>
             </div>
-            <a href={spotifyStartUrl({ mode, returnTo: "/" })} className={linkButton("spotify", "shrink-0")}>
+            <a href={spotifyStartUrl({ mode, returnTo: next })} className={linkButton("spotify", "shrink-0")}>
               <SpotifyIcon /> Continue with Spotify
             </a>
           </div>
@@ -117,7 +119,7 @@ export default function ConnectSpotify() {
               {clientId && !valid && <p className="text-xs text-amber-300">A Client ID is 32 letters (a–f) and numbers.</p>}
             </Step>
             <Step n={4} title="Connect">
-              <a href={valid ? spotifyStartUrl({ mode, clientId: trimmed, returnTo: "/" }) : undefined} onClick={remember}
+              <a href={valid ? spotifyStartUrl({ mode, clientId: trimmed, returnTo: next }) : undefined} onClick={remember}
                 aria-disabled={!valid} className={linkButton("spotify", valid ? "" : "pointer-events-none opacity-40")}>
                 <SpotifyIcon /> Connect with my app
               </a>

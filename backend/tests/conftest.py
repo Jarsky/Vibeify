@@ -72,3 +72,16 @@ def sdk_http(monkeypatch):
 
     monkeypatch.setattr(httpx2.AsyncHTTPTransport, "handle_async_request", handle)
     return routes
+
+
+async def connect_spotify(email: str) -> None:
+    """Give an account a Spotify connection (needed e.g. before buying a plan)."""
+    from sqlalchemy import select
+
+    from app.db import utcnow
+    from app.models import SpotifyConnection, User
+    async with app_db.sessionmaker()() as db:
+        user = (await db.execute(select(User).where(User.email == email))).scalar_one()
+        db.add(SpotifyConnection(user_id=user.id, spotify_user_id=f"sp-{user.id[:8]}", client_id="a" * 32,
+                                 access_token_enc="", refresh_token_enc="", expires_at=utcnow()))
+        await db.commit()
