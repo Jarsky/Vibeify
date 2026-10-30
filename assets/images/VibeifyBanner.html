@@ -1,0 +1,54 @@
+<!-- Source for VibeifyBanner.png. Render at 1464x176 with device scale 2 (e.g. Playwright: locator("#banner").screenshot(omit_background=True)). -->
+<!doctype html><html><head><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@600;800;900&display=block" rel="stylesheet">
+<style>
+  html,body{margin:0;background:transparent}
+  .b{position:relative;width:1464px;height:176px;border-radius:14px;overflow:hidden;box-sizing:border-box;
+     background:radial-gradient(420px 160px at 50% 50%,rgba(34,211,238,.13),transparent 70%),
+                radial-gradient(500px 220px at 0% 100%,rgba(46,229,157,.12),transparent 70%),
+                radial-gradient(500px 220px at 100% 0%,rgba(168,85,247,.16),transparent 70%),#0b0b13;
+     border:1.5px solid rgba(34,211,238,.40);box-shadow:inset 0 0 40px rgba(168,85,247,.12);font-family:Montserrat,sans-serif}
+  /* left: wall of album covers fading toward the middle */
+  .wall{position:absolute;left:-30px;top:-46px;width:560px;height:290px;transform:rotate(-8deg);display:grid;
+        grid-template-columns:repeat(8,60px);gap:9px;-webkit-mask-image:linear-gradient(90deg,#000 10%,transparent 92%)}
+  .wall i{position:relative;display:block;height:60px;border-radius:6px;overflow:hidden;border:1px solid rgba(255,255,255,.08);opacity:.6}
+  .wall i::after{content:"";position:absolute;width:26px;height:26px;border-radius:50%;left:var(--x);top:var(--y);background:rgba(255,255,255,.28)}
+  /* right: a sound wave and the kind of things people ask for */
+  .eq{position:absolute;right:70px;bottom:20px;display:flex;align-items:flex-end;gap:7px;
+      -webkit-mask-image:linear-gradient(270deg,#000 35%,transparent 100%)}
+  .eq i{display:block;width:9px;border-radius:5px;background:linear-gradient(#a855f7,#22d3ee 55%,#2ee59d);opacity:.55;
+        box-shadow:0 0 10px rgba(34,211,238,.35)}
+  .chip{position:absolute;font-weight:600;font-size:14px;color:#e4e4ee;border:1.5px solid rgba(34,211,238,.5);
+        border-radius:999px;padding:5px 13px;box-shadow:0 0 14px rgba(34,211,238,.22);background:rgba(20,20,32,.75)}
+  .chip.v{border-color:rgba(168,85,247,.6);box-shadow:0 0 14px rgba(168,85,247,.25)}
+  .chip.m{border-color:rgba(46,229,157,.55);box-shadow:0 0 14px rgba(46,229,157,.22)}
+  .center{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:26px}
+  .logo{width:118px;height:118px;filter:drop-shadow(0 0 18px rgba(34,211,238,.5))}
+  .name{display:inline-block;font-weight:900;font-size:84px;line-height:.9;letter-spacing:.02em;
+        background:linear-gradient(90deg,#2ee59d,#22d3ee 45%,#a855f7);-webkit-background-clip:text;color:transparent;
+        filter:drop-shadow(0 0 14px rgba(34,211,238,.3))}
+  .sub{margin-top:10px;font-weight:600;font-size:19px;letter-spacing:.14em;color:#ececf3}
+</style></head><body>
+<div class="b" id="banner">
+  <div class="wall" id="wall"></div>
+  <div class="eq" id="eq"></div>
+  <span class="chip" style="right:205px;top:20px">more upbeat</span>
+  <span class="chip v" style="right:40px;top:30px;opacity:.85">no ballads</span>
+  <span class="chip m" style="right:150px;top:70px;opacity:.7">rainy day lo-fi</span>
+  <span class="chip" style="right:60px;top:118px;opacity:.55">2000s throwbacks</span>
+  <div class="center">
+    <svg class="logo" viewBox="0 0 64 64"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2ee59d"/><stop offset=".55" stop-color="#22d3ee"/><stop offset="1" stop-color="#a855f7"/></linearGradient></defs>
+      <rect x="1.5" y="1.5" width="61" height="61" rx="15" fill="#0d0d16" stroke="rgba(34,211,238,.45)" stroke-width="1.5"/>
+      <g fill="url(#g)"><rect x="14" y="30" width="6" height="20" rx="3"/><rect x="24" y="18" width="6" height="32" rx="3"/><rect x="34" y="24" width="6" height="26" rx="3"/><rect x="44" y="12" width="6" height="38" rx="3"/></g></svg>
+    <div><div class="name">VIBEIFY</div><div class="sub">DESCRIBE THE VIBE. GET THE PLAYLIST.</div></div>
+  </div>
+</div>
+<script>
+  const tones=[["#e0443e","#b8732a"],["#d6c23a","#6f9d2c"],["#5fd23a","#1f9b4a"],["#2ee59d","#1c8f9a"],["#22c6ee","#2346b8"],
+               ["#4b3ef0","#8e2fc4"],["#d63fb0","#8a1f6a"],["#f08a2e","#c2412b"]];
+  const w=document.getElementById("wall");
+  for(let i=0;i<32;i++){const t=document.createElement("i");const [a,b]=tones[(i*3)%tones.length];
+    t.style.background=`linear-gradient(150deg,${a},${b})`;t.style.setProperty("--x",(8+(i*13)%24)+"px");t.style.setProperty("--y",(6+(i*17)%26)+"px");
+    if(i%7===3)t.style.boxShadow="0 0 16px rgba(34,211,238,.4)";w.appendChild(t)}
+  const e=document.getElementById("eq");[18,34,26,52,40,66,48,30,58,74,44,62,36,82,54,40,70,50,28,46,60,38,72,52].forEach(h=>{const i=document.createElement("i");i.style.height=h+"px";e.appendChild(i)});
+</script></body></html>
