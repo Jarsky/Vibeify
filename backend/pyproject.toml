@@ -1,6 +1,7 @@
 [project]
 name = "vibeify"
 version = "0.1.0"
+license = "MIT"
 description = "AI-curated Spotify playlists: describe what you want, an LLM picks the songs, Spotify gets the playlist."
 requires-python = ">=3.12"
 dependencies = [
@@ -37,7 +38,7 @@ line-length = 120
 target-version = "py312"
 
 [build-system]
-requires = ["setuptools>=75"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

@@ -11,6 +11,7 @@
 </p>
 
 ![CI](https://img.shields.io/github/actions/workflow/status/Jarsky/Vibeify/ci.yml?branch=main)
+![License](https://img.shields.io/github/license/Jarsky/Vibeify?cacheSeconds=0)
 ![Python](https://img.shields.io/badge/python-3.12%2B-blue)
 ![React](https://img.shields.io/badge/react-19-61DAFB)
 ![Docker](https://img.shields.io/badge/docker-compose-2496ED)
@@ -143,4 +144,5 @@ Sign in at `PUBLIC_URL`, open **Admin**, and work through these:
 
 ## License
 
-No license has been chosen yet, so all rights are reserved. Not affiliated with Spotify.
+[MIT](./LICENSE). Not affiliated with Spotify. You're responsible for following Spotify's developer terms, your AI
+providers' terms and your payment provider's rules.
